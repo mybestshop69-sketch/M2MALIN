@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
+from typing import Any, ClassVar
+from urllib.parse import urlparse
+import math
+import os
+import tempfile
 
 import requests
 
@@ -121,6 +126,12 @@ class MetaClient:
 @dataclass(slots=True)
 class TikTokClient:
     access_token: str
+    _MAX_CHUNK_SIZE: ClassVar[int] = 64 * 1024 * 1024
+    _VIDEO_CONTENT_TYPES: ClassVar[dict[str, str]] = {
+        ".mp4": "video/mp4",
+        ".mov": "video/quicktime",
+        ".webm": "video/webm",
+    }
 
     def creator_info(self) -> dict[str, Any]:
         response = requests.post(
@@ -139,7 +150,7 @@ class TikTokClient:
         caption: str,
         media_url: str,
         media_type: str,
-        privacy_level: str = "PUBLIC_TO_EVERYONE",
+        privacy_level: str = "SELF_ONLY",
     ) -> dict[str, Any]:
         if not media_url:
             raise SocialApiError("TikTok exige une URL publique de média.")
@@ -167,7 +178,14 @@ class TikTokClient:
                 "post_mode": "DIRECT_POST",
                 "media_type": "PHOTO",
             }
-        else:
+            response = requests.post(endpoint, headers=headers, json=body, timeout=90)
+            return _json_or_raise(response, "TikTok")
+
+        temp_path: str | None = None
+        try:
+            temp_path, video_size, content_type = self._download_video(media_url)
+            chunk_size = video_size if video_size < self._MAX_CHUNK_SIZE else self._MAX_CHUNK_SIZE
+            total_chunk_count = math.ceil(video_size / chunk_size)
             endpoint = "https://open.tiktokapis.com/v2/post/publish/video/init/"
             body = {
                 "post_info": {
@@ -179,10 +197,105 @@ class TikTokClient:
                     "video_cover_timestamp_ms": 1000,
                 },
                 "source_info": {
-                    "source": "PULL_FROM_URL",
-                    "video_url": media_url,
+                    "source": "FILE_UPLOAD",
+                    "video_size": video_size,
+                    "chunk_size": chunk_size,
+                    "total_chunk_count": total_chunk_count,
                 },
             }
 
-        response = requests.post(endpoint, headers=headers, json=body, timeout=90)
-        return _json_or_raise(response, "TikTok")
+            response = requests.post(endpoint, headers=headers, json=body, timeout=90)
+            payload = _json_or_raise(response, "TikTok")
+            data = payload.get("data", {})
+            upload_url = data.get("upload_url")
+            publish_id = data.get("publish_id")
+            if not upload_url or not publish_id:
+                raise SocialApiError("TikTok: URL d'upload ou identifiant de publication absent.")
+
+            self._upload_video_file(temp_path, upload_url, video_size, chunk_size, content_type)
+            return payload
+        finally:
+            if temp_path:
+                try:
+                    os.remove(temp_path)
+                except FileNotFoundError:
+                    pass
+
+    def _download_video(self, media_url: str) -> tuple[str, int, str]:
+        parsed = urlparse(media_url)
+        if parsed.scheme.lower() != "https":
+            raise SocialApiError("TikTok exige une URL vidéo HTTPS.")
+
+        extension = Path(parsed.path).suffix.lower()
+        content_type = self._VIDEO_CONTENT_TYPES.get(extension)
+        if not content_type:
+            raise SocialApiError("TikTok accepte uniquement les vidéos MP4, MOV ou WebM.")
+
+        temp_path: str | None = None
+        try:
+            with requests.get(media_url, stream=True, timeout=90) as response:
+                if not response.ok:
+                    raise SocialApiError(f"TikTok: téléchargement vidéo impossible ({response.status_code}).")
+
+                response_content_type = response.headers.get("Content-Type", "").split(";", 1)[0].lower()
+                if response_content_type and not (
+                    response_content_type == content_type
+                    or response_content_type == "application/octet-stream"
+                    or response_content_type.startswith("video/")
+                ):
+                    raise SocialApiError("TikTok: le fichier téléchargé n'est pas une vidéo valide.")
+
+                with tempfile.NamedTemporaryFile(delete=False, suffix=extension) as temp_file:
+                    temp_path = temp_file.name
+                    for chunk in response.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            temp_file.write(chunk)
+
+            video_size = os.path.getsize(temp_path)
+            if video_size <= 0:
+                raise SocialApiError("TikTok: la vidéo téléchargée est vide.")
+            return temp_path, video_size, content_type
+        except Exception:
+            if temp_path:
+                try:
+                    os.remove(temp_path)
+                except FileNotFoundError:
+                    pass
+            raise
+
+    def _upload_video_file(
+        self,
+        temp_path: str,
+        upload_url: str,
+        video_size: int,
+        chunk_size: int,
+        content_type: str,
+    ) -> None:
+        with open(temp_path, "rb") as video_file:
+            start = 0
+            while start < video_size:
+                chunk = video_file.read(chunk_size)
+                if not chunk:
+                    break
+
+                end = start + len(chunk) - 1
+                response = requests.put(
+                    upload_url,
+                    data=chunk,
+                    headers={
+                        "Content-Type": content_type,
+                        "Content-Length": str(len(chunk)),
+                        "Content-Range": f"bytes {start}-{end}/{video_size}",
+                    },
+                    timeout=180,
+                )
+                if not response.ok:
+                    self._raise_upload_error(response)
+                start = end + 1
+
+    def _raise_upload_error(self, response: requests.Response) -> None:
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise SocialApiError(f"TikTok: upload vidéo refusé ({response.status_code}).") from exc
+        raise SocialApiError(f"TikTok: upload vidéo refusé ({payload.get('error', payload)}).")
