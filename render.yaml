@@ -2,7 +2,7 @@ services:
   - type: web
     name: m2malin-social-manager
     runtime: docker
-    plan: starter
+    plan: free
     autoDeploy: true
     healthCheckPath: /health
     envVars:
