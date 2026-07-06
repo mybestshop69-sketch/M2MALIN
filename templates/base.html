@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}M² Malin Social Manager{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="{{ url_for('index') }}">M² Malin <span>Social Manager</span></a>
+    <nav>
+      <a href="{{ url_for('index') }}">Tableau de bord</a>
+      <a class="button small" href="{{ url_for('new_post') }}">+ Nouvelle publication</a>
+    </nav>
+  </header>
+
+  <main class="container">
+    {% for category, message in get_flashed_messages(with_categories=true) %}
+      <div class="flash {{ category }}">{{ message }}</div>
+    {% endfor %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

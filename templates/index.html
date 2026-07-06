@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}Tableau de bord — M² Malin{% endblock %}
+{% block content %}
+<section class="hero">
+  <div>
+    <p class="eyebrow">PILOTAGE DES RÉSEAUX SOCIAUX</p>
+    <h1>Vos publications, au même endroit.</h1>
+    <p>Fuseau horaire : <strong>{{ timezone }}</strong> · Mode automatique :
+      <strong>{{ "activé" if auto_mode else "désactivé" }}</strong>
+    </p>
+  </div>
+  <a class="button" href="{{ url_for('new_post') }}">Créer une publication</a>
+</section>
+
+<section>
+  <h2>Connexions</h2>
+  <div class="grid cards">
+    <article class="card">
+      <h3>Facebook & Instagram</h3>
+      {% if connections.get("meta") %}
+        <p class="status ok">Connecté : {{ connections["meta"].account_name }}</p>
+        <p>Instagram professionnel :
+          {{ "détecté" if connections["meta"].instagram_user_id else "non détecté" }}
+        </p>
+        <form method="post" action="{{ url_for('disconnect', platform='meta') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button class="link danger" type="submit">Déconnecter</button>
+        </form>
+      {% else %}
+        <p class="status">Non connecté</p>
+        <a class="button secondary" href="{{ url_for('connect_meta') }}">Connecter Meta</a>
+      {% endif %}
+    </article>
+
+    <article class="card">
+      <h3>TikTok</h3>
+      {% if connections.get("tiktok") %}
+        <p class="status ok">Connecté : {{ connections["tiktok"].account_name }}</p>
+        <form method="post" action="{{ url_for('disconnect', platform='tiktok') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button class="link danger" type="submit">Déconnecter</button>
+        </form>
+      {% else %}
+        <p class="status">Non connecté</p>
+        <a class="button secondary" href="{{ url_for('connect_tiktok') }}">Connecter TikTok</a>
+      {% endif %}
+    </article>
+  </div>
+</section>
+
+<section>
+  <div class="section-title">
+    <h2>Calendrier éditorial</h2>
+    <a href="{{ url_for('new_post') }}">Ajouter</a>
+  </div>
+
+  {% if posts %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Date (Paris)</th>
+            <th>Publication</th>
+            <th>Plateformes</th>
+            <th>Statut</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for post in posts %}
+          <tr>
+            <td>{{ post.scheduled_at|paris_time }}</td>
+            <td>
+              <strong>{{ post.title }}</strong>
+              <span class="muted">{{ post.caption[:110] }}{% if post.caption|length > 110 %}…{% endif %}</span>
+              {% if post.result_message %}<details><summary>Détails</summary><code>{{ post.result_message }}</code></details>{% endif %}
+            </td>
+            <td>{{ post.platforms }}</td>
+            <td><span class="badge {{ post.status }}">{{ post.status }}</span></td>
+            <td class="actions">
+              {% if post.status == "draft" %}
+              <form method="post" action="{{ url_for('approve_post', post_id=post.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit">Approuver</button>
+              </form>
+              {% endif %}
+              {% if post.status in ["draft", "approved", "failed"] %}
+              <form method="post" action="{{ url_for('publish_now', post_id=post.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit">Publier maintenant</button>
+              </form>
+              {% endif %}
+              <form method="post" action="{{ url_for('delete_post', post_id=post.id) }}" onsubmit="return confirm('Supprimer cette publication ?')">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="danger" type="submit">Supprimer</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="empty">
+      <h3>Aucune publication programmée</h3>
+      <p>Créez votre première publication pour Facebook, Instagram ou TikTok.</p>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Nouvelle publication — M² Malin{% endblock %}
+{% block content %}
+<section class="form-page">
+  <div>
+    <p class="eyebrow">CALENDRIER ÉDITORIAL</p>
+    <h1>Nouvelle publication</h1>
+    <p>Les médias doivent être accessibles par une URL HTTPS publique. Pour TikTok, le domaine doit être vérifié dans l’application développeur.</p>
+  </div>
+
+  <form class="form-card" method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    <label>
+      Titre interne *
+      <input name="title" required maxlength="180" placeholder="Ex. Gourde enfant — démonstration">
+    </label>
+
+    <label>
+      Texte de la publication *
+      <textarea name="caption" required rows="7" placeholder="Une gourde pratique pour accompagner les enfants partout…"></textarea>
+    </label>
+
+    <div class="two-columns">
+      <label>
+        URL publique du média
+        <input name="media_url" type="url" placeholder="https://m2malin.fr/.../video.mp4">
+      </label>
+
+      <label>
+        Type de média
+        <select name="media_type">
+          <option value="image">Image</option>
+          <option value="video">Vidéo</option>
+        </select>
+      </label>
+    </div>
+
+    <fieldset>
+      <legend>Plateformes *</legend>
+      <label class="check"><input type="checkbox" name="platforms" value="facebook"> Facebook</label>
+      <label class="check"><input type="checkbox" name="platforms" value="instagram"> Instagram</label>
+      <label class="check"><input type="checkbox" name="platforms" value="tiktok"> TikTok</label>
+    </fieldset>
+
+    <label>
+      Date et heure de publication *
+      <input name="scheduled_at" type="datetime-local" required>
+      <small>Les horaires recommandés sont 12:00 et 18:00, heure de Paris.</small>
+    </label>
+
+    <button class="button" type="submit">Enregistrer la publication</button>
+  </form>
+</section>
+{% endblock %}
