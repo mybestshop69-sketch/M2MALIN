@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: m2malin-social-manager
+    runtime: docker
+    plan: starter
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: APP_BASE_URL
+        sync: false
+      - key: FLASK_SECRET_KEY
+        generateValue: true
+      - key: TOKEN_ENCRYPTION_KEY
+        generateValue: true
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: DEFAULT_TIMEZONE
+        value: Europe/Paris
+      - key: HUMAN_APPROVAL_REQUIRED
+        value: "true"
+      - key: AUTO_MODE_ENABLED
+        value: "false"
+      - key: META_APP_ID
+        sync: false
+      - key: META_APP_SECRET
+        sync: false
+      - key: META_GRAPH_VERSION
+        value: v23.0
+      - key: META_REDIRECT_URI
+        sync: false
+      - key: TIKTOK_CLIENT_KEY
+        sync: false
+      - key: TIKTOK_CLIENT_SECRET
+        sync: false
+      - key: TIKTOK_REDIRECT_URI
+        sync: false
+      - key: TIKTOK_SCOPES
+        value: user.info.basic,video.publish,video.upload
