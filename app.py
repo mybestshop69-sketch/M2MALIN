@@ -79,7 +79,7 @@ def decrypt_secret(value: str) -> str:
         return fernet().decrypt(value.encode()).decode()
     except InvalidToken as exc:
         raise RuntimeError(
-            "Impossible de déchiffrer le jeton. Vérifiez TOKEN_ENCRYPTION_KEY."
+            "Impossible de dechiffrer le jeton. Verifiez TOKEN_ENCRYPTION_KEY."
         ) from exc
 
 
@@ -111,6 +111,9 @@ class SocialPost(db.Model):
     published_at = db.Column(db.DateTime)
 
 
+from messenger_assistant import init_messenger_assistant
+
+
 def require_admin(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
@@ -136,7 +139,7 @@ def require_admin(view):
 
 @app.before_request
 def protect_dashboard():
-    if request.endpoint in {"health", "static"}:
+    if request.endpoint in {"health", "static", "meta_webhook_verify", "meta_webhook_receive"}:
         return None
     return require_admin(lambda: None)()
 
@@ -209,7 +212,7 @@ def new_post():
         )
         db.session.add(post)
         db.session.commit()
-        flash("Publication enregistrée.", "success")
+        flash("Publication enregistree.", "success")
         return redirect(url_for("index"))
 
     return render_template("new_post.html")
@@ -221,7 +224,7 @@ def approve_post(post_id: int):
     post.status = "approved"
     post.result_message = None
     db.session.commit()
-    flash("Publication approuvée.", "success")
+    flash("Publication approuvee.", "success")
     return redirect(url_for("index"))
 
 
@@ -232,7 +235,7 @@ def publish_now(post_id: int):
     post.scheduled_at = datetime.utcnow()
     db.session.commit()
     publish_post(post.id)
-    flash("Tentative de publication terminée.", "success")
+    flash("Tentative de publication terminee.", "success")
     return redirect(url_for("index"))
 
 
@@ -241,7 +244,7 @@ def delete_post(post_id: int):
     post = db.get_or_404(SocialPost, post_id)
     db.session.delete(post)
     db.session.commit()
-    flash("Publication supprimée.", "success")
+    flash("Publication supprimee.", "success")
     return redirect(url_for("index"))
 
 
@@ -253,7 +256,7 @@ def connect_meta():
         f"{os.getenv('APP_BASE_URL', 'http://localhost:5000')}/oauth/meta/callback",
     )
     if not app_id:
-        flash("META_APP_ID n'est pas configuré.", "error")
+        flash("META_APP_ID n'est pas configure.", "error")
         return redirect(url_for("index"))
 
     state = secrets.token_urlsafe(32)
@@ -271,6 +274,8 @@ def connect_meta():
                 "instagram_basic",
                 "instagram_content_publish",
                 "business_management",
+                "pages_messaging",
+                "pages_manage_metadata",
             ]
         ),
     }
@@ -280,12 +285,12 @@ def connect_meta():
 @app.get("/oauth/meta/callback")
 def meta_callback():
     if request.args.get("state") != session.pop("meta_oauth_state", None):
-        flash("Échec de sécurité OAuth Meta.", "error")
+        flash("Echec de securite OAuth Meta.", "error")
         return redirect(url_for("index"))
 
     code = request.args.get("code")
     if not code:
-        flash("Meta n'a pas renvoyé de code d'autorisation.", "error")
+        flash("Meta n'a pas renvoye de code d'autorisation.", "error")
         return redirect(url_for("index"))
 
     version = os.getenv("META_GRAPH_VERSION", "v23.0")
@@ -312,7 +317,7 @@ def meta_callback():
     try:
         pages = MetaClient(version, user_token).get_pages()
         if not pages:
-            raise SocialApiError("Aucune Page Facebook administrée n'a été trouvée.")
+            raise SocialApiError("Aucune Page Facebook administree n'a ete trouvee.")
         page = pages[0]
         page_token = page["access_token"]
         instagram_id = MetaClient(version, page_token).get_instagram_account(
@@ -338,7 +343,7 @@ def meta_callback():
     connection.page_id = page["id"]
     connection.instagram_user_id = instagram_id
     db.session.commit()
-    flash("Facebook et Instagram sont connectés.", "success")
+    flash("Facebook et Instagram sont connectes.", "success")
     return redirect(url_for("index"))
 
 
@@ -350,7 +355,7 @@ def connect_tiktok():
         f"{os.getenv('APP_BASE_URL', 'http://localhost:5000')}/oauth/tiktok/callback",
     )
     if not client_key:
-        flash("TIKTOK_CLIENT_KEY n'est pas configuré.", "error")
+        flash("TIKTOK_CLIENT_KEY n'est pas configure.", "error")
         return redirect(url_for("index"))
 
     state = secrets.token_urlsafe(32)
@@ -370,12 +375,12 @@ def connect_tiktok():
 @app.get("/oauth/tiktok/callback")
 def tiktok_callback():
     if request.args.get("state") != session.pop("tiktok_oauth_state", None):
-        flash("Échec de sécurité OAuth TikTok.", "error")
+        flash("Echec de securite OAuth TikTok.", "error")
         return redirect(url_for("index"))
 
     code = request.args.get("code")
     if not code:
-        flash("TikTok n'a pas renvoyé de code d'autorisation.", "error")
+        flash("TikTok n'a pas renvoye de code d'autorisation.", "error")
         return redirect(url_for("index"))
 
     redirect_uri = os.getenv(
@@ -415,7 +420,7 @@ def tiktok_callback():
     connection.open_id = payload.get("open_id")
     connection.access_token_encrypted = encrypt_secret(access_token)
     db.session.commit()
-    flash("TikTok est connecté.", "success")
+    flash("TikTok est connecte.", "success")
     return redirect(url_for("index"))
 
 
@@ -427,7 +432,7 @@ def disconnect(platform: str):
     if connection:
         db.session.delete(connection)
         db.session.commit()
-    flash(f"Connexion {platform} supprimée.", "success")
+    flash(f"Connexion {platform} supprimee.", "success")
     return redirect(url_for("index"))
 
 
@@ -457,7 +462,7 @@ def publish_post(post_id: int) -> None:
             try:
                 if platform in {"facebook", "instagram"}:
                     if not meta_connection:
-                        raise SocialApiError("Compte Meta non connecté.")
+                        raise SocialApiError("Compte Meta non connecte.")
                     token = decrypt_secret(meta_connection.access_token_encrypted)
                     client = MetaClient(
                         os.getenv("META_GRAPH_VERSION", "v23.0"), token
@@ -472,7 +477,7 @@ def publish_post(post_id: int) -> None:
                     else:
                         if not meta_connection.instagram_user_id:
                             raise SocialApiError(
-                                "Aucun compte Instagram professionnel lié à la Page."
+                                "Aucun compte Instagram professionnel lie a la Page."
                             )
                         result = client.publish_instagram(
                             meta_connection.instagram_user_id,
@@ -482,7 +487,7 @@ def publish_post(post_id: int) -> None:
                         )
                 elif platform == "tiktok":
                     if not tiktok_connection:
-                        raise SocialApiError("Compte TikTok non connecté.")
+                        raise SocialApiError("Compte TikTok non connecte.")
                     result = TikTokClient(
                         decrypt_secret(tiktok_connection.access_token_encrypted)
                     ).publish(
@@ -519,6 +524,17 @@ def process_due_posts() -> None:
         publish_post(post_id)
 
 
+messenger_assistant = init_messenger_assistant(
+    app=app,
+    db=db,
+    csrf=csrf,
+    connection_model=Connection,
+    decrypt_secret=decrypt_secret,
+    encrypt_secret=encrypt_secret,
+    env_bool=env_bool,
+)
+
+
 with app.app_context():
     db.create_all()
 
@@ -531,6 +547,14 @@ scheduler.add_job(
     "interval",
     minutes=1,
     id="publish-due-posts",
+    max_instances=1,
+    coalesce=True,
+)
+scheduler.add_job(
+    messenger_assistant["process_pending"],
+    "interval",
+    seconds=7,
+    id="messenger-pending-messages",
     max_instances=1,
     coalesce=True,
 )

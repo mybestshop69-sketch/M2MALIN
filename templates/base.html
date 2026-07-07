@@ -3,14 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}M² Malin Social Manager{% endblock %}</title>
+  <title>{% block title %}M2 Malin Social Manager{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="{{ url_for('index') }}">M² Malin <span>Social Manager</span></a>
+    <a class="brand" href="{{ url_for('index') }}">M2 Malin <span>Social Manager</span></a>
     <nav>
       <a href="{{ url_for('index') }}">Tableau de bord</a>
+      <a href="{{ url_for('messenger_dashboard') }}">Assistant Messenger</a>
       <a class="button small" href="{{ url_for('new_post') }}">+ Nouvelle publication</a>
     </nav>
   </header>

@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}Assistant Messenger - M2 Malin{% endblock %}
+{% block content %}
+<section class="hero">
+  <div>
+    <p class="eyebrow">MESSENGER IA</p>
+    <h1>Assistant Messenger</h1>
+    <p>Reponses automatiques : <strong>{{ "activees" if auto_reply_enabled else "desactivees" }}</strong></p>
+  </div>
+  <form method="post" action="{{ url_for('activate_meta_messenger') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit">Activer Messenger sur la page Meta</button>
+  </form>
+</section>
+
+<section>
+  <h2>Etat</h2>
+  <div class="grid cards">
+    <article class="card"><h3>Webhook</h3><p class="status {{ 'ok' if webhook_configured else '' }}">{{ "configure" if webhook_configured else "a verifier" }}</p></article>
+    <article class="card"><h3>Meta</h3><p class="status {{ 'ok' if meta_connected else '' }}">{{ "connecte" if meta_connected else "non connecte" }}</p></article>
+    <article class="card"><h3>OpenAI</h3><p class="status {{ 'ok' if openai_configured else '' }}">{{ "configure" if openai_configured else "cle ou modele manquant" }}</p></article>
+  </div>
+</section>
+
+<section>
+  <h2>Reglage global</h2>
+  <form method="post" action="{{ url_for('messenger_settings') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit">Activer / desactiver via Render</button>
+  </form>
+</section>
+
+<section>
+  <h2>Intervention humaine requise</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Client</th><th>Dernier message</th><th>Action</th></tr></thead>
+      <tbody>
+        {% for row in human %}
+        <tr>
+          <td>{{ row.sender_hash[:12] }}...</td>
+          <td>{{ row.last_message_at }}</td>
+          <td>
+            <form method="post" action="{{ url_for('reactivate_messenger_conversation', conversation_id=row.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit">Reactiver l'assistant</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="3">Aucune conversation en attente humaine.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2>Dernieres conversations</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Client</th><th>Etat</th><th>Dernier message</th><th>Action</th></tr></thead>
+      <tbody>
+        {% for row in conversations %}
+        <tr>
+          <td>{{ row.sender_hash[:12] }}...</td>
+          <td>{{ "humain" if row.needs_human else ("pause" if row.bot_paused else "assistant") }}</td>
+          <td>{{ row.last_message_at }}</td>
+          <td>
+            <form method="post" action="{{ url_for('take_messenger_conversation', conversation_id=row.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit">Prendre en charge</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4">Aucune conversation Messenger recue.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2>Messages en attente</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Date</th><th>Type</th><th>Contenu</th></tr></thead>
+      <tbody>
+        {% for row in pending %}
+        <tr><td>{{ row.created_at }}</td><td>{{ row.message_type }}</td><td>{{ row.content }}</td></tr>
+        {% else %}
+        <tr><td colspan="3">Aucun message en attente.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2>Messages en erreur</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Date</th><th>Erreur</th><th>Action</th></tr></thead>
+      <tbody>
+        {% for row in failed %}
+        <tr>
+          <td>{{ row.created_at }}</td>
+          <td>{{ row.error_message }}</td>
+          <td>
+            <form method="post" action="{{ url_for('retry_messenger_message', message_id=row.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit">Reessayer</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="3">Aucune erreur Messenger.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

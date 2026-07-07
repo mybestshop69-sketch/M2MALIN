@@ -21,13 +21,28 @@ def _json_or_raise(response: requests.Response, platform: str) -> dict[str, Any]
         payload = response.json()
     except ValueError as exc:
         raise SocialApiError(
-            f"{platform}: réponse non JSON ({response.status_code})."
+            f"{platform}: reponse non JSON ({response.status_code})."
         ) from exc
 
     if not response.ok:
         message = payload.get("error", payload)
         raise SocialApiError(f"{platform}: {message}")
     return payload
+
+
+def _split_messenger_text(text: str, limit: int = 1900) -> list[str]:
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    remaining = text
+    while remaining:
+        cut = remaining[:limit]
+        split_at = max(cut.rfind("\n"), cut.rfind(". "), cut.rfind(" "))
+        if split_at < limit // 2:
+            split_at = limit
+        chunks.append(remaining[:split_at].strip())
+        remaining = remaining[split_at:].strip()
+    return chunks
 
 
 @dataclass(slots=True)
@@ -63,6 +78,35 @@ class MetaClient:
         account = payload.get("instagram_business_account")
         return account.get("id") if account else None
 
+    def subscribe_page_to_messenger(self, page_id: str) -> dict[str, Any]:
+        response = requests.post(
+            f"{self.base_url}/{page_id}/subscribed_apps",
+            data={
+                "subscribed_fields": "messages,messaging_postbacks",
+                "access_token": self.access_token,
+            },
+            timeout=20,
+        )
+        return _json_or_raise(response, "Meta Messenger")
+
+    def send_text_message(self, page_id: str, recipient_psid: str, text: str) -> list[dict[str, Any]]:
+        if not text.strip():
+            raise SocialApiError("Messenger: message vide.")
+        responses = []
+        for chunk in _split_messenger_text(text.strip()):
+            response = requests.post(
+                f"{self.base_url}/{page_id}/messages",
+                params={"access_token": self.access_token},
+                json={
+                    "recipient": {"id": recipient_psid},
+                    "message": {"text": chunk},
+                    "messaging_type": "RESPONSE",
+                },
+                timeout=20,
+            )
+            responses.append(_json_or_raise(response, "Meta Messenger"))
+        return responses
+
     def publish_facebook(
         self,
         page_id: str,
@@ -92,7 +136,7 @@ class MetaClient:
         media_type: str,
     ) -> dict[str, Any]:
         if not media_url:
-            raise SocialApiError("Instagram exige une image ou une vidéo publique.")
+            raise SocialApiError("Instagram exige une image ou une video publique.")
 
         creation_data: dict[str, Any] = {
             "caption": caption,
@@ -111,7 +155,7 @@ class MetaClient:
         creation = _json_or_raise(create_response, "Instagram")
         creation_id = creation.get("id")
         if not creation_id:
-            raise SocialApiError("Instagram: identifiant de création absent.")
+            raise SocialApiError("Instagram: identifiant de creation absent.")
 
         self._wait_for_instagram_media(creation_id)
 
@@ -151,14 +195,14 @@ class MetaClient:
             if status_code in {"ERROR", "EXPIRED"}:
                 details = last_status.get("status") or status_code
                 raise SocialApiError(
-                    f"Instagram: le traitement du média a échoué ({details})."
+                    f"Instagram: le traitement du media a echoue ({details})."
                 )
 
             time.sleep(poll_interval_seconds)
 
         details = last_status.get("status") or last_status.get("status_code") or "IN_PROGRESS"
         raise SocialApiError(
-            "Instagram: le média n'est pas prêt après "
+            "Instagram: le media n'est pas pret apres "
             f"{timeout_seconds} secondes (statut: {details})."
         )
 
@@ -193,7 +237,7 @@ class TikTokClient:
         privacy_level: str = "SELF_ONLY",
     ) -> dict[str, Any]:
         if not media_url:
-            raise SocialApiError("TikTok exige une URL publique de média.")
+            raise SocialApiError("TikTok exige une URL publique de media.")
 
         headers = {
             "Authorization": f"Bearer {self.access_token}",
@@ -264,18 +308,18 @@ class TikTokClient:
     def _download_video(self, media_url: str) -> tuple[str, int, str]:
         parsed = urlparse(media_url)
         if parsed.scheme.lower() != "https":
-            raise SocialApiError("TikTok exige une URL vidéo HTTPS.")
+            raise SocialApiError("TikTok exige une URL video HTTPS.")
 
         extension = Path(parsed.path).suffix.lower()
         content_type = self._VIDEO_CONTENT_TYPES.get(extension)
         if not content_type:
-            raise SocialApiError("TikTok accepte uniquement les vidéos MP4, MOV ou WebM.")
+            raise SocialApiError("TikTok accepte uniquement les videos MP4, MOV ou WebM.")
 
         temp_path: str | None = None
         try:
             with requests.get(media_url, stream=True, timeout=90) as response:
                 if not response.ok:
-                    raise SocialApiError(f"TikTok: téléchargement vidéo impossible ({response.status_code}).")
+                    raise SocialApiError(f"TikTok: telechargement video impossible ({response.status_code}).")
 
                 response_content_type = response.headers.get("Content-Type", "").split(";", 1)[0].lower()
                 if response_content_type and not (
@@ -283,7 +327,7 @@ class TikTokClient:
                     or response_content_type == "application/octet-stream"
                     or response_content_type.startswith("video/")
                 ):
-                    raise SocialApiError("TikTok: le fichier téléchargé n'est pas une vidéo valide.")
+                    raise SocialApiError("TikTok: le fichier telecharge n'est pas une video valide.")
 
                 with tempfile.NamedTemporaryFile(delete=False, suffix=extension) as temp_file:
                     temp_path = temp_file.name
@@ -293,7 +337,7 @@ class TikTokClient:
 
             video_size = os.path.getsize(temp_path)
             if video_size <= 0:
-                raise SocialApiError("TikTok: la vidéo téléchargée est vide.")
+                raise SocialApiError("TikTok: la video telechargee est vide.")
             return temp_path, video_size, content_type
         except Exception:
             if temp_path:
@@ -337,5 +381,5 @@ class TikTokClient:
         try:
             payload = response.json()
         except ValueError as exc:
-            raise SocialApiError(f"TikTok: upload vidéo refusé ({response.status_code}).") from exc
-        raise SocialApiError(f"TikTok: upload vidéo refusé ({payload.get('error', payload)}).")
+            raise SocialApiError(f"TikTok: upload video refuse ({response.status_code}).") from exc
+        raise SocialApiError(f"TikTok: upload video refuse ({payload.get('error', payload)}).")
