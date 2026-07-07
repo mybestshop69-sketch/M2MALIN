@@ -4,7 +4,7 @@ import base64
 import hashlib
 import os
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
 from urllib.parse import urlencode
@@ -573,6 +573,7 @@ scheduler.add_job(
     max_instances=1,
     coalesce=True,
     misfire_grace_time=300,
+    next_run_time=datetime.utcnow() + timedelta(seconds=30),
 )
 if not app.testing and os.getenv("DISABLE_SCHEDULER", "false").lower() != "true":
     scheduler.start()

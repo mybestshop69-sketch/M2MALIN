@@ -186,6 +186,20 @@ def test_health_exposes_render_commit_when_available(monkeypatch):
     assert response.get_json() == {"status": "ok", "commit": "abc123"}
 
 
+def test_site_knowledge_refresh_job_is_separate_from_messenger_worker(monkeypatch):
+    module = load_app(monkeypatch)
+
+    refresh_job = module.scheduler.get_job("messenger-refresh-site-knowledge")
+    process_job = module.scheduler.get_job("messenger-pending-messages")
+
+    assert refresh_job is not None
+    assert process_job is not None
+    assert refresh_job.trigger.interval.total_seconds() == 21600
+    assert process_job.trigger.interval.total_seconds() == 15
+    assert refresh_job.max_instances == 1
+    assert process_job.max_instances == 1
+
+
 def test_signature_rejection_and_queue_dedup(monkeypatch):
     module = load_app(monkeypatch)
     client = module.app.test_client()
