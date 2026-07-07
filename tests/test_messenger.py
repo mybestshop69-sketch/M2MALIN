@@ -175,6 +175,17 @@ def test_webhook_validation_and_bad_token(monkeypatch):
     assert bad.status_code == 403
 
 
+def test_health_exposes_render_commit_when_available(monkeypatch):
+    monkeypatch.setenv("RENDER_GIT_COMMIT", "abc123")
+    module = load_app(monkeypatch)
+    client = module.app.test_client()
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"status": "ok", "commit": "abc123"}
+
+
 def test_signature_rejection_and_queue_dedup(monkeypatch):
     module = load_app(monkeypatch)
     client = module.app.test_client()

@@ -146,7 +146,11 @@ def protect_dashboard():
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}, 200
+    payload = {"status": "ok"}
+    commit = os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT_SHA")
+    if commit:
+        payload["commit"] = commit
+    return payload, 200
 
 
 @app.template_filter("paris_time")
