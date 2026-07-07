@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 import math
 import os
 import tempfile
+import time
 
 import requests
 
@@ -112,6 +113,8 @@ class MetaClient:
         if not creation_id:
             raise SocialApiError("Instagram: identifiant de création absent.")
 
+        self._wait_for_instagram_media(creation_id)
+
         publish_response = requests.post(
             f"{self.base_url}/{instagram_user_id}/media_publish",
             data={
@@ -121,6 +124,43 @@ class MetaClient:
             timeout=90,
         )
         return _json_or_raise(publish_response, "Instagram")
+
+    def _wait_for_instagram_media(
+        self,
+        creation_id: str,
+        timeout_seconds: int = 180,
+        poll_interval_seconds: int = 5,
+    ) -> dict[str, Any]:
+        deadline = time.monotonic() + timeout_seconds
+        last_status: dict[str, Any] = {}
+
+        while time.monotonic() < deadline:
+            status_response = requests.get(
+                f"{self.base_url}/{creation_id}",
+                params={
+                    "fields": "status_code,status",
+                    "access_token": self.access_token,
+                },
+                timeout=30,
+            )
+            last_status = _json_or_raise(status_response, "Instagram")
+            status_code = str(last_status.get("status_code", "")).upper()
+
+            if status_code in {"FINISHED", "PUBLISHED"}:
+                return last_status
+            if status_code in {"ERROR", "EXPIRED"}:
+                details = last_status.get("status") or status_code
+                raise SocialApiError(
+                    f"Instagram: le traitement du média a échoué ({details})."
+                )
+
+            time.sleep(poll_interval_seconds)
+
+        details = last_status.get("status") or last_status.get("status_code") or "IN_PROGRESS"
+        raise SocialApiError(
+            "Instagram: le média n'est pas prêt après "
+            f"{timeout_seconds} secondes (statut: {details})."
+        )
 
 
 @dataclass(slots=True)
