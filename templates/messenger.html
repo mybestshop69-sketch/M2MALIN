@@ -37,6 +37,17 @@
 <section>
   <h2>Diagnostic Messenger</h2>
   <div class="grid cards">
+    <article class="card"><h3>Controle Meta</h3><p>{{ diagnostics.meta_checked_at or "Jamais" }}</p></article>
+    <article class="card"><h3>App attendue</h3><p>{{ diagnostics.meta_expected_app_id }}</p></article>
+    <article class="card"><h3>App detectee</h3><p>{{ diagnostics.meta_app_id_detected or "Non verifiee" }}</p></article>
+    <article class="card"><h3>App ID valide</h3><p>{{ "oui" if diagnostics.meta_app_id_valid == "true" else "non" }}</p></article>
+    <article class="card"><h3>Secret valide</h3><p>{{ "oui" if diagnostics.meta_app_secret_valid == "true" else "non" }}</p></article>
+  </div>
+  <form method="post" action="{{ url_for('check_meta_configuration') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit">Verifier la configuration Meta</button>
+  </form>
+  <div class="grid cards">
     <article class="card"><h3>Dernier webhook recu</h3><p>{{ diagnostics.last_webhook_received_at or "Jamais" }}</p></article>
     <article class="card"><h3>Signature presente</h3><p>{{ "oui" if diagnostics.last_signature_present == "true" else "non" }}</p></article>
     <article class="card"><h3>Derniere signature valide</h3><p>{{ diagnostics.last_signature_valid_at or "Jamais" }}</p></article>

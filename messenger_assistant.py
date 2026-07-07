@@ -36,6 +36,7 @@ HUMAN_VERIFY_MESSAGE = "Je préfère vérifier cette information plutôt que de 
 HUMAN_REQUIRED_MARKER = "[HUMAN_REQUIRED]"
 PROCESSING_TIMEOUT_SECONDS = 45
 DELIVERY_FALLBACK_MESSAGE = "Les delais de livraison peuvent varier selon le produit. Ils sont indiques sur la fiche du produit et lors de la validation de la commande. Envoyez-moi le nom ou le lien du produit concerne afin que je verifie le delai correspondant."
+EXPECTED_META_APP_ID = "1551714796659004"
 POLICY_PATHS = {
     "livraison": "/policies/shipping-policy",
     "retours": "/policies/refund-policy",
@@ -178,6 +179,19 @@ def init_messenger_assistant(
         _set_setting("messenger_auto_reply_enabled", "true" if enabled else "false")
         db.session.commit()
         flash("Réponses automatiques activées." if enabled else "Réponses automatiques désactivées.", "success")
+        return redirect(url_for("messenger_dashboard"))
+
+    @app.post("/messenger/check-meta-config")
+    def check_meta_configuration():
+        result = _check_meta_configuration()
+        for key, value in result.items():
+            _set_setting(f"messenger_meta_{key}", str(value).lower() if isinstance(value, bool) else str(value or ""))
+        _set_setting("messenger_meta_checked_at", datetime.utcnow().isoformat())
+        db.session.commit()
+        if result["app_id_valid"] and result["app_secret_valid"]:
+            flash("Configuration Meta valide pour l'application M2Malin Social Manager.", "success")
+        else:
+            flash("Configuration Meta a corriger : l'App ID ou le secret ne correspond pas a l'application attendue.", "error")
         return redirect(url_for("messenger_dashboard"))
 
     @app.post("/messenger/activate-meta")
@@ -548,7 +562,40 @@ def init_messenger_assistant(
             "last_message_processed_at": _get_setting("messenger_last_message_processed_at"),
             "last_message_sent_at": _get_setting("messenger_last_message_sent_at"),
             "invalid_signature_count": _get_setting("messenger_invalid_signature_count", "0"),
+            "meta_checked_at": _get_setting("messenger_meta_checked_at"),
+            "meta_app_id_valid": _get_setting("messenger_meta_app_id_valid"),
+            "meta_app_id_detected": _get_setting("messenger_meta_app_id_detected"),
+            "meta_expected_app_id": _get_setting("messenger_meta_expected_app_id", EXPECTED_META_APP_ID),
+            "meta_app_secret_valid": _get_setting("messenger_meta_app_secret_valid"),
         }
+
+    def _check_meta_configuration() -> dict[str, str | bool]:
+        app_id = os.getenv("META_APP_ID", "")
+        app_secret = os.getenv("META_APP_SECRET", "")
+        result: dict[str, str | bool] = {
+            "app_id_valid": False,
+            "app_id_detected": "",
+            "expected_app_id": EXPECTED_META_APP_ID,
+            "app_secret_valid": False,
+        }
+        if not app_id or not app_secret:
+            return result
+        try:
+            response = requests.get(
+                f"https://graph.facebook.com/{os.getenv('META_GRAPH_VERSION', 'v23.0')}/{app_id}",
+                params={"fields": "id", "access_token": f"{app_id}|{app_secret}"},
+                timeout=10,
+            )
+            if not response.ok:
+                return result
+            detected = str((response.json() or {}).get("id") or "")
+        except Exception as exc:
+            app.logger.warning("messenger.meta_config_check_failed type=%s", type(exc).__name__)
+            return result
+        result["app_id_detected"] = detected
+        result["app_secret_valid"] = detected == app_id
+        result["app_id_valid"] = app_id == EXPECTED_META_APP_ID and detected == EXPECTED_META_APP_ID
+        return result
 
     def reset_stuck_processing() -> int:
         cutoff = datetime.utcnow() - timedelta(minutes=2)

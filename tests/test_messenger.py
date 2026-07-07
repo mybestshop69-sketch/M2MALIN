@@ -276,6 +276,48 @@ def test_dashboard_activation_and_deactivation(monkeypatch):
         assert module.db.session.execute(text("select value from app_settings where key='messenger_auto_reply_enabled'")).scalar() == "false"
 
 
+def test_dashboard_meta_configuration_check_valid(monkeypatch):
+    monkeypatch.setenv("META_APP_ID", "1551714796659004")
+    module = load_app(monkeypatch)
+    client = module.app.test_client()
+
+    class FakeResponse:
+        ok = True
+
+        def json(self):
+            return {"id": "1551714796659004"}
+
+    monkeypatch.setattr("messenger_assistant.requests.get", lambda *args, **kwargs: FakeResponse())
+    token = csrf_token(client)
+
+    assert client.post("/messenger/check-meta-config", headers=auth_headers(), data={"csrf_token": token}).status_code == 302
+    with module.app.app_context():
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_meta_app_id_valid'")).scalar() == "true"
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_meta_app_secret_valid'")).scalar() == "true"
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_meta_app_id_detected'")).scalar() == "1551714796659004"
+
+
+def test_dashboard_meta_configuration_check_detects_wrong_app(monkeypatch):
+    monkeypatch.setenv("META_APP_ID", "4419342638395501")
+    module = load_app(monkeypatch)
+    client = module.app.test_client()
+
+    class FakeResponse:
+        ok = True
+
+        def json(self):
+            return {"id": "4419342638395501"}
+
+    monkeypatch.setattr("messenger_assistant.requests.get", lambda *args, **kwargs: FakeResponse())
+    token = csrf_token(client)
+
+    assert client.post("/messenger/check-meta-config", headers=auth_headers(), data={"csrf_token": token}).status_code == 302
+    with module.app.app_context():
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_meta_app_id_valid'")).scalar() == "false"
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_meta_app_secret_valid'")).scalar() == "true"
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_meta_expected_app_id'")).scalar() == "1551714796659004"
+
+
 def test_auto_disabled_does_not_send(monkeypatch):
     monkeypatch.setenv("MESSENGER_AUTO_REPLY_ENABLED", "false")
     module = load_app(monkeypatch)
