@@ -35,6 +35,7 @@ OPENAI_FALLBACK = "Bonjour. Merci pour votre message. Notre assistant rencontre 
 HUMAN_VERIFY_MESSAGE = "Je préfère vérifier cette information plutôt que de vous donner une réponse incorrecte. Je transmets votre demande à un conseiller."
 HUMAN_REQUIRED_MARKER = "[HUMAN_REQUIRED]"
 PROCESSING_TIMEOUT_SECONDS = 45
+DELIVERY_FALLBACK_MESSAGE = "Les delais de livraison peuvent varier selon le produit. Ils sont indiques sur la fiche du produit et lors de la validation de la commande. Envoyez-moi le nom ou le lien du produit concerne afin que je verifie le delai correspondant."
 POLICY_PATHS = {
     "livraison": "/policies/shipping-policy",
     "retours": "/policies/refund-policy",
@@ -121,16 +122,27 @@ def init_messenger_assistant(
         app.logger.warning("messenger.webhook.received")
         _set_setting("messenger_last_webhook_received_at", datetime.utcnow().isoformat())
         raw_body = request.get_data(cache=True)
-        if not _valid_meta_signature(raw_body, request.headers.get("X-Hub-Signature-256")):
+        signature_status = _meta_signature_status(raw_body, request.headers.get("X-Hub-Signature-256"))
+        _set_setting("messenger_last_signature_present", "true" if signature_status != "signature_absent" else "false")
+        if signature_status == "signature_valid":
+            _set_setting("messenger_last_signature_valid_at", datetime.utcnow().isoformat())
+            app.logger.warning("messenger.webhook.signature_valid")
+        else:
             _increment_setting("messenger_invalid_signature_count")
+            _set_setting("messenger_last_signature_refused_at", datetime.utcnow().isoformat())
+            _set_setting("messenger_last_signature_reject_reason", signature_status)
             db.session.commit()
-            app.logger.warning("messenger.webhook.invalid_signature")
+            if signature_status == "signature_absent":
+                app.logger.warning("messenger.webhook.signature_missing")
+            else:
+                app.logger.warning("messenger.webhook.signature_mismatch")
             return "", 403
         payload = request.get_json(silent=True) or {}
         try:
             queued = enqueue_payload(payload)
             if queued:
                 _set_setting("messenger_last_queued_at", datetime.utcnow().isoformat())
+                _set_setting("messenger_last_event_queued_at", datetime.utcnow().isoformat())
             db.session.commit()
             app.logger.warning("messenger.webhook.queued count=%s", queued)
         except Exception as exc:
@@ -260,6 +272,7 @@ def init_messenger_assistant(
         message_type, content = _message_content(message, postback)
         status = "human_required" if conversation.needs_human or conversation.bot_paused else "pending"
         db.session.add(MessengerMessage(conversation_id=conversation.id, meta_message_id=meta_message_id, direction="inbound", message_type=message_type, content=content, status=status))
+        app.logger.warning("messenger.message.queued type=%s", message_type)
         return 1
 
     def process_pending() -> None:
@@ -293,6 +306,7 @@ def init_messenger_assistant(
     def _process_one(message: MessengerMessage, started_at: float | None = None) -> None:
         message.status = "processing"
         db.session.flush()
+        app.logger.warning("messenger.message.processing")
         conversation = db.session.get(MessengerConversation, message.conversation_id)
         if not conversation:
             message.status = "failed"
@@ -331,11 +345,13 @@ def init_messenger_assistant(
                 return
             try:
                 reply = _openai_reply(conversation)
+                app.logger.warning("messenger.openai.completed")
             except Exception as exc:
                 app.logger.warning("messenger.openai_failed type=%s", type(exc).__name__)
                 reply = OPENAI_FALLBACK
                 conversation.needs_human = True
                 conversation.bot_paused = True
+            reply = _ensure_delivery_answer(message.content or "", reply, _cached_site_knowledge())
             reply, openai_requires_human = _clean_openai_reply(reply)
             _send_reply(conversation, reply)
             if openai_requires_human:
@@ -345,9 +361,11 @@ def init_messenger_assistant(
             else:
                 message.status = "completed"
             message.processed_at = datetime.utcnow()
+            _set_setting("messenger_last_message_processed_at", message.processed_at.isoformat())
+            app.logger.warning("messenger.message.completed status=%s", message.status)
         except Exception as exc:
             message.retry_count += 1
-            message.error_message = type(exc).__name__
+            message.error_message = _safe_error_message(exc)
             if message.retry_count >= 3:
                 message.status = "failed"
             else:
@@ -390,6 +408,8 @@ def init_messenger_assistant(
         responses = MetaClient(os.getenv("META_GRAPH_VERSION", "v23.0"), token).send_text_message(meta_connection.page_id or "", psid, text)
         response_id = responses[-1].get("message_id") if responses else None
         conversation.last_response_id = response_id
+        _set_setting("messenger_last_message_sent_at", datetime.utcnow().isoformat())
+        app.logger.warning("messenger.reply.sent")
         db.session.add(MessengerMessage(conversation_id=conversation.id, meta_message_id=response_id, direction="outbound", message_type="text", content=text, status="completed", processed_at=datetime.utcnow()))
 
     def _site_knowledge() -> dict[str, Any]:
@@ -518,8 +538,15 @@ def init_messenger_assistant(
     def _diagnostics() -> dict[str, str]:
         return {
             "last_webhook_received_at": _get_setting("messenger_last_webhook_received_at"),
+            "last_signature_present": _get_setting("messenger_last_signature_present", "false"),
+            "last_signature_valid_at": _get_setting("messenger_last_signature_valid_at"),
+            "last_signature_refused_at": _get_setting("messenger_last_signature_refused_at"),
+            "last_signature_reject_reason": _get_setting("messenger_last_signature_reject_reason"),
             "last_queued_at": _get_setting("messenger_last_queued_at"),
+            "last_event_queued_at": _get_setting("messenger_last_event_queued_at"),
             "last_processed_at": _get_setting("messenger_last_processed_at"),
+            "last_message_processed_at": _get_setting("messenger_last_message_processed_at"),
+            "last_message_sent_at": _get_setting("messenger_last_message_sent_at"),
             "invalid_signature_count": _get_setting("messenger_invalid_signature_count", "0"),
         }
 
@@ -556,14 +583,25 @@ def init_messenger_assistant(
 
 
 def _valid_meta_signature(raw_body: bytes, signature_header: str | None) -> bool:
+    return _meta_signature_status(raw_body, signature_header) == "signature_valid"
+
+
+def _meta_signature_status(raw_body: bytes, signature_header: str | None) -> str:
     app_secret = os.getenv("META_APP_SECRET", "")
-    if not raw_body or not signature_header or not app_secret:
-        return False
+    if not signature_header:
+        return "signature_absent"
+    if not app_secret:
+        return "signature_mismatch"
     prefix = "sha256="
     if not signature_header.startswith(prefix):
-        return False
+        return "signature_format_invalid"
     expected = hmac.new(app_secret.encode(), raw_body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(signature_header[len(prefix):], expected)
+    provided = signature_header[len(prefix):]
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", provided):
+        return "signature_format_invalid"
+    if hmac.compare_digest(provided, expected):
+        return "signature_valid"
+    return "signature_mismatch"
 
 
 def _hash_identifier(value: str) -> str:
@@ -631,6 +669,47 @@ def _clean_openai_reply(reply: str) -> tuple[str, bool]:
         requires_human = True
         cleaned = HUMAN_VERIFY_MESSAGE
     return cleaned or HUMAN_VERIFY_MESSAGE, requires_human
+
+
+def _ensure_delivery_answer(content: str, reply: str, knowledge: dict[str, Any] | None = None) -> str:
+    if not _is_delivery_question(content):
+        return reply
+    if _looks_like_delivery_answer(reply):
+        return reply
+    policy_text = _delivery_policy_text(knowledge or {})
+    if policy_text:
+        return f"D'apres notre politique de livraison : {policy_text}"
+    return DELIVERY_FALLBACK_MESSAGE
+
+
+def _is_delivery_question(content: str) -> bool:
+    normalized = _normalize_text(content)
+    return "livraison" in normalized or "delai" in normalized or "delais" in normalized or "expedition" in normalized
+
+
+def _looks_like_delivery_answer(reply: str) -> bool:
+    normalized = _normalize_text(reply)
+    if not normalized:
+        return False
+    generic_markers = ("comment puis-je vous aider", "posez moi votre question", "bienvenue", "notre boutique")
+    if any(marker in normalized for marker in generic_markers):
+        return False
+    return any(word in normalized for word in ("livraison", "delai", "delais", "expedition", "commande", "produit"))
+
+
+def _delivery_policy_text(knowledge: dict[str, Any]) -> str:
+    for policy in knowledge.get("policies") or []:
+        name = _normalize_text(str(policy.get("name") or ""))
+        if "livraison" in name or "shipping" in name:
+            return str(policy.get("text") or "").strip()[:900]
+    return ""
+
+
+def _safe_error_message(exc: Exception) -> str:
+    cleaned = re.sub(r"(access_token|app_secret|token|secret|password)=\\S+", r"\\1=<hidden>", str(exc), flags=re.I)
+    cleaned = cleaned.replace("\n", " ").replace("\r", " ")
+    prefix = type(exc).__name__
+    return f"{prefix}: {cleaned[:240]}" if cleaned else prefix
 
 
 def _clean_html(raw_html: str, limit: int = 1500) -> str:

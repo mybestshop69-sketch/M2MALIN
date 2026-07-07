@@ -38,8 +38,15 @@
   <h2>Diagnostic Messenger</h2>
   <div class="grid cards">
     <article class="card"><h3>Dernier webhook recu</h3><p>{{ diagnostics.last_webhook_received_at or "Jamais" }}</p></article>
+    <article class="card"><h3>Signature presente</h3><p>{{ "oui" if diagnostics.last_signature_present == "true" else "non" }}</p></article>
+    <article class="card"><h3>Derniere signature valide</h3><p>{{ diagnostics.last_signature_valid_at or "Jamais" }}</p></article>
+    <article class="card"><h3>Derniere signature refusee</h3><p>{{ diagnostics.last_signature_refused_at or "Jamais" }}</p></article>
+    <article class="card"><h3>Raison du dernier refus</h3><p>{{ diagnostics.last_signature_reject_reason or "Aucune" }}</p></article>
+    <article class="card"><h3>Dernier evenement en file</h3><p>{{ diagnostics.last_event_queued_at or "Jamais" }}</p></article>
     <article class="card"><h3>Dernier message en file</h3><p>{{ diagnostics.last_queued_at or "Jamais" }}</p></article>
     <article class="card"><h3>Dernier traitement termine</h3><p>{{ diagnostics.last_processed_at or "Jamais" }}</p></article>
+    <article class="card"><h3>Dernier message traite</h3><p>{{ diagnostics.last_message_processed_at or "Jamais" }}</p></article>
+    <article class="card"><h3>Dernier message envoye</h3><p>{{ diagnostics.last_message_sent_at or "Jamais" }}</p></article>
     <article class="card"><h3>Signatures refusees</h3><p>{{ diagnostics.invalid_signature_count }}</p></article>
   </div>
   <div class="grid cards">

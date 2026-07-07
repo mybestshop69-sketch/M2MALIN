@@ -2,10 +2,12 @@ import base64
 import hashlib
 import hmac
 import importlib
+import importlib.util
 import json
 import sys
 import types
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from sqlalchemy import text
 
@@ -40,8 +42,23 @@ def csrf_token(client):
 
 
 def signed(body: bytes) -> str:
+    return signed_with(body, b"test-secret")
+
+
+def signed_with(body: bytes, secret: bytes) -> str:
     digest = hmac.new(b"test-secret", body, hashlib.sha256).hexdigest()
+    if secret != b"test-secret":
+        digest = hmac.new(secret, body, hashlib.sha256).hexdigest()
     return f"sha256={digest}"
+
+
+def load_meta_check_script():
+    path = Path(__file__).resolve().parents[1] / "scripts" / "check_meta_configuration.py"
+    spec = importlib.util.spec_from_file_location("check_meta_configuration", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    return module
 
 
 def payload(mid="mid-1", text="Bonjour", sender="user-1"):
@@ -471,7 +488,7 @@ def test_meta_timeout_is_controlled_and_retried(monkeypatch):
         ).first()
         assert row[0] == "pending"
         assert row[1] == 1
-        assert row[2] == "RuntimeError"
+        assert row[2] == "RuntimeError: meta down"
 
 
 def test_stuck_processing_message_is_reset(monkeypatch):
@@ -519,7 +536,7 @@ def test_invalid_signature_is_logged_and_counted(monkeypatch, caplog):
     )
 
     assert response.status_code == 403
-    assert "messenger.webhook.invalid_signature" in caplog.text
+    assert "messenger.webhook.signature_mismatch" in caplog.text
     with module.app.app_context():
         assert module.db.session.execute(
             text("select value from app_settings where key='messenger_invalid_signature_count'")
@@ -552,3 +569,245 @@ def test_next_message_is_processed_after_previous_failure(monkeypatch):
             text("select status from messenger_messages where direction='inbound' order by id")
         ).all()
         assert [row[0] for row in rows] == ["pending", "completed"]
+
+
+def test_meta_signature_valid_with_real_hmac(monkeypatch, caplog):
+    module = load_app(monkeypatch)
+    client = module.app.test_client()
+    caplog.set_level("WARNING")
+    body = json.dumps(payload()).encode()
+
+    response = client.post(
+        "/webhooks/meta",
+        data=body,
+        content_type="application/json",
+        headers={"X-Hub-Signature-256": signed_with(body, b"test-secret")},
+    )
+
+    assert response.status_code == 200
+    assert "messenger.webhook.signature_valid" in caplog.text
+    with module.app.app_context():
+        assert module.db.session.execute(
+            text("select value from app_settings where key='messenger_last_signature_present'")
+        ).scalar() == "true"
+
+
+def test_meta_signature_with_wrong_secret_is_rejected(monkeypatch, caplog):
+    module = load_app(monkeypatch)
+    client = module.app.test_client()
+    caplog.set_level("WARNING")
+    body = json.dumps(payload()).encode()
+
+    response = client.post(
+        "/webhooks/meta",
+        data=body,
+        content_type="application/json",
+        headers={"X-Hub-Signature-256": signed_with(body, b"wrong-secret")},
+    )
+
+    assert response.status_code == 403
+    assert "messenger.webhook.signature_mismatch" in caplog.text
+    with module.app.app_context():
+        assert module.db.session.execute(
+            text("select value from app_settings where key='messenger_last_signature_reject_reason'")
+        ).scalar() == "signature_mismatch"
+
+
+def test_meta_signature_rejects_modified_body(monkeypatch):
+    module = load_app(monkeypatch)
+    client = module.app.test_client()
+    original = json.dumps(payload(text="Bonjour")).encode()
+    modified = json.dumps(payload(text="Bonjour modifie")).encode()
+
+    response = client.post(
+        "/webhooks/meta",
+        data=modified,
+        content_type="application/json",
+        headers={"X-Hub-Signature-256": signed_with(original, b"test-secret")},
+    )
+
+    assert response.status_code == 403
+    with module.app.app_context():
+        assert module.db.session.execute(
+            text("select count(*) from messenger_messages")
+        ).scalar() == 0
+
+
+def test_meta_signature_missing_and_bad_format_are_diagnosed(monkeypatch, caplog):
+    module = load_app(monkeypatch)
+    client = module.app.test_client()
+    body = json.dumps(payload()).encode()
+    caplog.set_level("WARNING")
+
+    missing = client.post("/webhooks/meta", data=body, content_type="application/json")
+    malformed = client.post(
+        "/webhooks/meta",
+        data=body,
+        content_type="application/json",
+        headers={"X-Hub-Signature-256": "sha1=bad"},
+    )
+
+    assert missing.status_code == 403
+    assert malformed.status_code == 403
+    assert "messenger.webhook.signature_missing" in caplog.text
+    assert "messenger.webhook.signature_mismatch" in caplog.text
+    with module.app.app_context():
+        assert module.db.session.execute(
+            text("select value from app_settings where key='messenger_last_signature_reject_reason'")
+        ).scalar() == "signature_format_invalid"
+
+
+def test_meta_test_sample_without_signature_is_not_queued(monkeypatch):
+    module = load_app(monkeypatch)
+    client = module.app.test_client()
+
+    response = client.post("/webhooks/meta", json=payload())
+
+    assert response.status_code == 403
+    with module.app.app_context():
+        assert module.db.session.execute(text("select count(*) from messenger_messages")).scalar() == 0
+        assert module.db.session.execute(
+            text("select value from app_settings where key='messenger_last_signature_present'")
+        ).scalar() == "false"
+
+
+def test_check_meta_configuration_accepts_expected_app_id():
+    script = load_meta_check_script()
+
+    class FakeResponse:
+        ok = True
+
+        def json(self):
+            return {"id": "1551714796659004"}
+
+    result = script.check_meta_app_credentials(
+        "1551714796659004",
+        "secret",
+        get=lambda *args, **kwargs: FakeResponse(),
+    )
+
+    assert result == {
+        "app_id_valid": True,
+        "app_id_detected": "1551714796659004",
+        "expected_app_id": "1551714796659004",
+        "app_secret_valid": True,
+    }
+
+
+def test_check_meta_configuration_rejects_wrong_app_id():
+    script = load_meta_check_script()
+
+    class FakeResponse:
+        ok = True
+
+        def json(self):
+            return {"id": "4419342638395501"}
+
+    result = script.check_meta_app_credentials(
+        "4419342638395501",
+        "secret",
+        get=lambda *args, **kwargs: FakeResponse(),
+    )
+
+    assert result["app_id_valid"] is False
+    assert result["app_id_detected"] == "4419342638395501"
+    assert result["app_secret_valid"] is True
+
+
+def test_token_debug_detects_wrong_meta_application():
+    script = load_meta_check_script()
+
+    summary = script.summarize_token_debug(
+        {
+            "data": {
+                "app_id": "4419342638395501",
+                "profile_id": "1163222070213376",
+                "scopes": "pages_messaging,pages_show_list",
+                "expires_at": 123,
+            }
+        }
+    )
+
+    assert summary["token_app_valid"] is False
+    assert summary["token_app_id_detected"] == "4419342638395501"
+    assert summary["page_id"] == "1163222070213376"
+    assert "pages_manage_metadata" in summary["missing_scopes"]
+
+
+def test_real_messenger_message_flow_with_secure_logs(monkeypatch, caplog):
+    module = load_app(monkeypatch)
+    sent = []
+    fake_openai(monkeypatch, output_text="Bonjour, votre commande est suivie.")
+    fake_meta_send(monkeypatch, sent)
+    client = module.app.test_client()
+    caplog.set_level("WARNING")
+    with module.app.app_context():
+        add_meta_connection(module)
+
+    assert post_signed(client, payload(text="Bonjour, pouvez-vous aider ?")).status_code == 200
+    module.messenger_assistant["process_pending"]()
+
+    logs = caplog.text
+    assert "messenger.message.queued" in logs
+    assert "messenger.message.processing" in logs
+    assert "messenger.openai.completed" in logs
+    assert "messenger.reply.sent" in logs
+    assert "messenger.message.completed" in logs
+    assert "user-1" not in logs
+    assert "page-token" not in logs
+    assert sent[0]["text"] == "Bonjour, votre commande est suivie."
+
+
+def test_delivery_question_does_not_get_generic_welcome(monkeypatch):
+    module = load_app(monkeypatch)
+    sent = []
+    fake_openai(monkeypatch, output_text="Bonjour, bienvenue chez M2 Malin. Comment puis-je vous aider ?")
+    fake_meta_send(monkeypatch, sent)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+        module.db.session.execute(
+            text(
+                "insert into site_knowledge_cache (cache_key, payload, expires_at, updated_at) "
+                "values ('public_site', :payload, :expires_at, :updated_at)"
+            ),
+            {
+                "payload": json.dumps(
+                    {
+                        "site": "https://m2malin.fr",
+                        "products": [],
+                        "policies": [
+                            {
+                                "name": "livraison",
+                                "url": "https://m2malin.fr/policies/shipping-policy",
+                                "text": "Livraison suivie en France sous 5 a 8 jours ouvres.",
+                            }
+                        ],
+                    }
+                ),
+                "expires_at": datetime.utcnow() + timedelta(hours=1),
+                "updated_at": datetime.utcnow(),
+            },
+        )
+        module.db.session.commit()
+
+    assert post_signed(client, payload(text="Bonjour, quels sont vos delais de livraison ?")).status_code == 200
+    module.messenger_assistant["process_pending"]()
+
+    assert "Livraison suivie en France sous 5 a 8 jours ouvres." in sent[0]["text"]
+    assert "Comment puis-je vous aider" not in sent[0]["text"]
+
+
+def test_delivery_question_without_policy_uses_required_fallback(monkeypatch):
+    module = load_app(monkeypatch)
+    sent = []
+    fake_openai(monkeypatch, output_text="Bonjour, bienvenue chez M2 Malin. Comment puis-je vous aider ?")
+    fake_meta_send(monkeypatch, sent)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+
+    assert post_signed(client, payload(text="Quels sont vos delais de livraison ?")).status_code == 200
+    module.messenger_assistant["process_pending"]()
+
+    assert sent[0]["text"] == "Les delais de livraison peuvent varier selon le produit. Ils sont indiques sur la fiche du produit et lors de la validation de la commande. Envoyez-moi le nom ou le lien du produit concerne afin que je verifie le delai correspondant."
