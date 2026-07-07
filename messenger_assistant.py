@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import html
 import json
 import os
+import re
+import unicodedata
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
@@ -18,20 +21,25 @@ HUMAN_TRIGGERS = (
     "humain",
     "conseiller",
     "parler a quelqu",
-    "parler a quelqu",
-    "reclamation",
     "reclamation",
     "litige",
     "remboursement",
     "commande non recue",
-    "commande non recue",
     "urgent",
-    "probleme de paiement",
     "probleme de paiement",
 )
 
 HUMAN_MESSAGE = "Je transmets votre demande a un conseiller M2 Malin afin qu'elle soit verifiee. Merci de votre patience."
 OPENAI_FALLBACK = "Bonjour. Merci pour votre message. Notre assistant rencontre momentanement une difficulte. Votre demande a bien ete recue et un conseiller pourra vous repondre."
+HUMAN_VERIFY_MESSAGE = "Je préfère vérifier cette information plutôt que de vous donner une réponse incorrecte. Je transmets votre demande à un conseiller."
+HUMAN_REQUIRED_MARKER = "[HUMAN_REQUIRED]"
+POLICY_PATHS = {
+    "livraison": "/policies/shipping-policy",
+    "retours": "/policies/refund-policy",
+    "remboursements": "/policies/refund-policy",
+    "confidentialite": "/policies/privacy-policy",
+    "conditions_generales": "/policies/terms-of-service",
+}
 
 
 def init_messenger_assistant(
@@ -89,6 +97,13 @@ def init_messenger_assistant(
         expires_at = db.Column(db.DateTime, nullable=False)
         updated_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
+    class AppSetting(db.Model):
+        __tablename__ = "app_settings"
+
+        key = db.Column(db.String(120), primary_key=True)
+        value = db.Column(db.Text, nullable=False)
+        updated_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
     @app.get("/webhooks/meta", endpoint="meta_webhook_verify")
     def meta_webhook_verify():
         mode = request.args.get("hub.mode")
@@ -119,7 +134,8 @@ def init_messenger_assistant(
         conversations = db.session.scalars(select(MessengerConversation).order_by(MessengerConversation.updated_at.desc()).limit(40)).all()
         pending = db.session.scalars(select(MessengerMessage).where(MessengerMessage.status == "pending").order_by(MessengerMessage.created_at.desc()).limit(30)).all()
         failed = db.session.scalars(select(MessengerMessage).where(MessengerMessage.status == "failed").order_by(MessengerMessage.created_at.desc()).limit(30)).all()
-        human = db.session.scalars(select(MessengerConversation).where(MessengerConversation.needs_human.is_(True)).order_by(MessengerConversation.updated_at.desc()).limit(30)).all()
+        human_conversations = db.session.scalars(select(MessengerConversation).where(MessengerConversation.needs_human.is_(True)).order_by(MessengerConversation.updated_at.desc()).limit(30)).all()
+        human = [{"conversation": item, "last_inbound": _last_inbound_content(item.id)} for item in human_conversations]
         meta_connection = db.session.scalar(select(connection_model).where(connection_model.platform == "meta"))
         return render_template(
             "messenger.html",
@@ -130,12 +146,15 @@ def init_messenger_assistant(
             meta_connected=bool(meta_connection),
             webhook_configured=bool(os.getenv("META_WEBHOOK_VERIFY_TOKEN") and os.getenv("META_APP_SECRET")),
             openai_configured=bool(os.getenv("OPENAI_API_KEY") and os.getenv("OPENAI_MODEL")),
-            auto_reply_enabled=env_bool("MESSENGER_AUTO_REPLY_ENABLED", True),
+            auto_reply_enabled=_auto_reply_enabled(),
         )
 
     @app.post("/messenger/settings")
     def messenger_settings():
-        flash("Modifiez MESSENGER_AUTO_REPLY_ENABLED dans Render puis redeployez pour changer ce reglage global.", "success")
+        enabled = request.form.get("enabled") == "true"
+        _set_setting("messenger_auto_reply_enabled", "true" if enabled else "false")
+        db.session.commit()
+        flash("Réponses automatiques activées." if enabled else "Réponses automatiques désactivées.", "success")
         return redirect(url_for("messenger_dashboard"))
 
     @app.post("/messenger/activate-meta")
@@ -195,7 +214,7 @@ def init_messenger_assistant(
                 event_id = _event_id(event)
                 if db.session.scalar(select(MessengerEvent).where(MessengerEvent.event_id == event_id)):
                     continue
-                db.session.add(MessengerEvent(event_id=event_id, payload=json.dumps({"page_id": page_id, "event": event}, ensure_ascii=False)))
+                db.session.add(MessengerEvent(event_id=event_id, payload=json.dumps(_minimal_event(page_id, event), ensure_ascii=False)))
                 queued += _enqueue_event(page_id, event)
         return queued
 
@@ -251,7 +270,7 @@ def init_messenger_assistant(
             message.error_message = "Conversation introuvable"
             return
         try:
-            if not env_bool("MESSENGER_AUTO_REPLY_ENABLED", True):
+            if not _auto_reply_enabled():
                 message.status = "completed"
                 message.processed_at = datetime.utcnow()
                 return
@@ -285,8 +304,14 @@ def init_messenger_assistant(
                 app.logger.warning("messenger.openai_failed type=%s", type(exc).__name__)
                 reply = OPENAI_FALLBACK
                 conversation.needs_human = True
+            reply, openai_requires_human = _clean_openai_reply(reply)
             _send_reply(conversation, reply)
-            message.status = "completed"
+            if openai_requires_human:
+                conversation.needs_human = True
+                conversation.bot_paused = True
+                message.status = "human_required"
+            else:
+                message.status = "completed"
             message.processed_at = datetime.utcnow()
         except Exception as exc:
             message.retry_count += 1
@@ -357,6 +382,21 @@ def init_messenger_assistant(
                     )
         except Exception:
             payload["products_error"] = "Catalogue public indisponible."
+        for policy_name, policy_path in POLICY_PATHS.items():
+            try:
+                response = requests.get(f"{base_url.rstrip()}{policy_path}", timeout=8)
+                if response.ok:
+                    text = _clean_html(response.text)
+                    if text:
+                        payload["policies"].append(
+                            {
+                                "name": policy_name,
+                                "url": f"{base_url.rstrip()}{policy_path}",
+                                "text": text,
+                            }
+                        )
+            except Exception:
+                continue
         db.session.merge(SiteKnowledgeCache(cache_key="public_site", payload=json.dumps(payload, ensure_ascii=False), expires_at=datetime.utcnow() + timedelta(hours=6)))
         return payload
 
@@ -372,7 +412,30 @@ def init_messenger_assistant(
         )
         return int(count or 0) >= limit
 
-    return {"process_pending": process_pending}
+    def _auto_reply_enabled() -> bool:
+        row = db.session.get(AppSetting, "messenger_auto_reply_enabled")
+        if row is None:
+            return env_bool("MESSENGER_AUTO_REPLY_ENABLED", True)
+        return row.value == "true"
+
+    def _set_setting(key: str, value: str) -> None:
+        row = db.session.get(AppSetting, key)
+        if row is None:
+            db.session.add(AppSetting(key=key, value=value, updated_at=datetime.utcnow()))
+        else:
+            row.value = value
+            row.updated_at = datetime.utcnow()
+
+    def _last_inbound_content(conversation_id: int) -> str:
+        row = db.session.scalar(
+            select(MessengerMessage)
+            .where(MessengerMessage.conversation_id == conversation_id, MessengerMessage.direction == "inbound")
+            .order_by(MessengerMessage.created_at.desc())
+            .limit(1)
+        )
+        return row.content if row and row.content else ""
+
+    return {"process_pending": process_pending, "site_knowledge": _site_knowledge}
 
 
 def _valid_meta_signature(raw_body: bytes, signature_header: str | None) -> bool:
@@ -394,7 +457,31 @@ def _event_id(event: dict[str, Any]) -> str:
     message = event.get("message") or {}
     postback = event.get("postback") or {}
     sender = (event.get("sender") or {}).get("id", "")
-    return str(message.get("mid") or postback.get("mid") or postback.get("payload") or f"{sender}:{event.get('timestamp', '')}")
+    if message.get("mid"):
+        return str(message["mid"])
+    if postback.get("mid"):
+        return str(postback["mid"])
+    if postback:
+        raw = f"{sender}:{event.get('timestamp', '')}:{postback.get('payload', '')}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    raw = f"{sender}:{event.get('timestamp', '')}:{json.dumps(event, sort_keys=True)}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _minimal_event(page_id: str, event: dict[str, Any]) -> dict[str, Any]:
+    sender_id = str((event.get("sender") or {}).get("id") or "")
+    message = event.get("message") or {}
+    postback = event.get("postback") or {}
+    message_type, _ = _message_content(message, postback)
+    return {
+        "page_id": page_id,
+        "sender_hash": _hash_identifier(sender_id) if sender_id else "",
+        "message_id": message.get("mid") or postback.get("mid") or _event_id(event),
+        "message_type": message_type,
+        "timestamp": event.get("timestamp"),
+        "has_attachment": bool(message.get("attachments")),
+        "status": "received",
+    }
 
 
 def _message_content(message: dict[str, Any], postback: dict[str, Any]) -> tuple[str, str]:
@@ -410,8 +497,30 @@ def _message_content(message: dict[str, Any], postback: dict[str, Any]) -> tuple
 
 
 def _needs_human(content: str) -> bool:
-    normalized = content.lower()
+    normalized = _normalize_text(content)
     return any(trigger in normalized for trigger in HUMAN_TRIGGERS)
+
+
+def _normalize_text(content: str) -> str:
+    normalized = unicodedata.normalize("NFKD", content).encode("ascii", "ignore").decode("ascii")
+    return " ".join(normalized.lower().split())
+
+
+def _clean_openai_reply(reply: str) -> tuple[str, bool]:
+    requires_human = HUMAN_REQUIRED_MARKER in reply
+    cleaned = reply.replace(HUMAN_REQUIRED_MARKER, "").strip()
+    normalized = _normalize_text(cleaned)
+    if "je prefere verifier cette information" in normalized or "je transmets votre demande a un conseiller" in normalized:
+        requires_human = True
+        cleaned = HUMAN_VERIFY_MESSAGE
+    return cleaned or HUMAN_VERIFY_MESSAGE, requires_human
+
+
+def _clean_html(raw_html: str, limit: int = 1500) -> str:
+    text = re.sub(r"(?is)<(script|style).*?>.*?</\\1>", " ", raw_html)
+    text = re.sub(r"(?s)<[^>]+>", " ", text)
+    text = html.unescape(text)
+    return " ".join(text.split())[:limit]
 
 
 def _system_prompt(knowledge: dict[str, Any]) -> str:

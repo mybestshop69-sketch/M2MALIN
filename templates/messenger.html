@@ -26,7 +26,11 @@
   <h2>Reglage global</h2>
   <form method="post" action="{{ url_for('messenger_settings') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <button type="submit">Activer / desactiver via Render</button>
+    <button type="submit" name="enabled" value="true">Activer les reponses automatiques</button>
+  </form>
+  <form method="post" action="{{ url_for('messenger_settings') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit" name="enabled" value="false">Desactiver les reponses automatiques</button>
   </form>
 </section>
 
@@ -34,21 +38,22 @@
   <h2>Intervention humaine requise</h2>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>Client</th><th>Dernier message</th><th>Action</th></tr></thead>
+      <thead><tr><th>Client</th><th>Date</th><th>Dernier message entrant</th><th>Action</th></tr></thead>
       <tbody>
         {% for row in human %}
         <tr>
-          <td>{{ row.sender_hash[:12] }}...</td>
-          <td>{{ row.last_message_at }}</td>
+          <td>{{ row.conversation.sender_hash[:12] }}...</td>
+          <td>{{ row.conversation.last_message_at }}</td>
+          <td>{{ row.last_inbound }}</td>
           <td>
-            <form method="post" action="{{ url_for('reactivate_messenger_conversation', conversation_id=row.id) }}">
+            <form method="post" action="{{ url_for('reactivate_messenger_conversation', conversation_id=row.conversation.id) }}">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button type="submit">Reactiver l'assistant</button>
             </form>
           </td>
         </tr>
         {% else %}
-        <tr><td colspan="3">Aucune conversation en attente humaine.</td></tr>
+        <tr><td colspan="4">Aucune conversation en attente humaine.</td></tr>
         {% endfor %}
       </tbody>
     </table>
