@@ -102,7 +102,7 @@ class MetaClient:
                     "message": {"text": chunk},
                     "messaging_type": "RESPONSE",
                 },
-                timeout=20,
+                timeout=10,
             )
             responses.append(_json_or_raise(response, "Meta Messenger"))
         return responses

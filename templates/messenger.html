@@ -35,6 +35,26 @@
 </section>
 
 <section>
+  <h2>Diagnostic Messenger</h2>
+  <div class="grid cards">
+    <article class="card"><h3>Dernier webhook recu</h3><p>{{ diagnostics.last_webhook_received_at or "Jamais" }}</p></article>
+    <article class="card"><h3>Dernier message en file</h3><p>{{ diagnostics.last_queued_at or "Jamais" }}</p></article>
+    <article class="card"><h3>Dernier traitement termine</h3><p>{{ diagnostics.last_processed_at or "Jamais" }}</p></article>
+    <article class="card"><h3>Signatures refusees</h3><p>{{ diagnostics.invalid_signature_count }}</p></article>
+  </div>
+  <div class="grid cards">
+    <article class="card"><h3>Pending</h3><p>{{ status_counts.pending }}</p></article>
+    <article class="card"><h3>Processing</h3><p>{{ status_counts.processing }}</p></article>
+    <article class="card"><h3>Failed</h3><p>{{ status_counts.failed }}</p></article>
+    <article class="card"><h3>Human required</h3><p>{{ status_counts.human_required }}</p></article>
+  </div>
+  <form method="post" action="{{ url_for('reset_stuck_messenger_messages') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit">Reinitialiser les messages bloques</button>
+  </form>
+</section>
+
+<section>
   <h2>Intervention humaine requise</h2>
   <div class="table-wrap">
     <table>

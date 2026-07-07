@@ -6,6 +6,7 @@ import html
 import json
 import os
 import re
+import time
 import unicodedata
 from datetime import datetime, timedelta
 from typing import Any, Callable
@@ -33,6 +34,7 @@ HUMAN_MESSAGE = "Je transmets votre demande a un conseiller M2 Malin afin qu'ell
 OPENAI_FALLBACK = "Bonjour. Merci pour votre message. Notre assistant rencontre momentanement une difficulte. Votre demande a bien ete recue et un conseiller pourra vous repondre."
 HUMAN_VERIFY_MESSAGE = "Je préfère vérifier cette information plutôt que de vous donner une réponse incorrecte. Je transmets votre demande à un conseiller."
 HUMAN_REQUIRED_MARKER = "[HUMAN_REQUIRED]"
+PROCESSING_TIMEOUT_SECONDS = 45
 POLICY_PATHS = {
     "livraison": "/policies/shipping-policy",
     "retours": "/policies/refund-policy",
@@ -116,14 +118,21 @@ def init_messenger_assistant(
     @app.post("/webhooks/meta", endpoint="meta_webhook_receive")
     @csrf.exempt
     def meta_webhook_receive():
+        app.logger.warning("messenger.webhook.received")
+        _set_setting("messenger_last_webhook_received_at", datetime.utcnow().isoformat())
         raw_body = request.get_data(cache=True)
         if not _valid_meta_signature(raw_body, request.headers.get("X-Hub-Signature-256")):
+            _increment_setting("messenger_invalid_signature_count")
+            db.session.commit()
+            app.logger.warning("messenger.webhook.invalid_signature")
             return "", 403
         payload = request.get_json(silent=True) or {}
         try:
             queued = enqueue_payload(payload)
+            if queued:
+                _set_setting("messenger_last_queued_at", datetime.utcnow().isoformat())
             db.session.commit()
-            app.logger.info("messenger.webhook queued=%s", queued)
+            app.logger.warning("messenger.webhook.queued count=%s", queued)
         except Exception as exc:
             db.session.rollback()
             app.logger.warning("messenger.webhook_failed type=%s", type(exc).__name__)
@@ -147,6 +156,8 @@ def init_messenger_assistant(
             webhook_configured=bool(os.getenv("META_WEBHOOK_VERIFY_TOKEN") and os.getenv("META_APP_SECRET")),
             openai_configured=bool(os.getenv("OPENAI_API_KEY") and os.getenv("OPENAI_MODEL")),
             auto_reply_enabled=_auto_reply_enabled(),
+            diagnostics=_diagnostics(),
+            status_counts=_message_status_counts(),
         )
 
     @app.post("/messenger/settings")
@@ -206,6 +217,13 @@ def init_messenger_assistant(
         flash("Message remis en file d'attente.", "success")
         return redirect(url_for("messenger_dashboard"))
 
+    @app.post("/messenger/reset-stuck")
+    def reset_stuck_messenger_messages():
+        count = reset_stuck_processing()
+        db.session.commit()
+        flash(f"{count} message(s) bloques remis en attente.", "success")
+        return redirect(url_for("messenger_dashboard"))
+
     def enqueue_payload(payload: dict[str, Any]) -> int:
         queued = 0
         for entry in payload.get("entry", []):
@@ -245,23 +263,34 @@ def init_messenger_assistant(
         return 1
 
     def process_pending() -> None:
+        started_at = time.monotonic()
+        app.logger.warning("messenger.process_pending.started")
         with app.app_context():
-            rows = db.session.scalars(
-                select(MessengerMessage)
-                .where(
-                    MessengerMessage.direction == "inbound",
-                    MessengerMessage.status == "pending",
-                    (MessengerMessage.next_attempt_at.is_(None)) | (MessengerMessage.next_attempt_at <= datetime.utcnow()),
+            try:
+                reset_stuck_processing()
+                message = db.session.scalar(
+                    select(MessengerMessage)
+                    .where(
+                        MessengerMessage.direction == "inbound",
+                        MessengerMessage.status == "pending",
+                        (MessengerMessage.next_attempt_at.is_(None)) | (MessengerMessage.next_attempt_at <= datetime.utcnow()),
+                    )
+                    .order_by(MessengerMessage.created_at.asc())
+                    .limit(1)
                 )
-                .order_by(MessengerMessage.created_at.asc())
-                .limit(5)
-            ).all()
-            for message in rows:
-                _process_one(message)
-            if rows:
+                if message:
+                    _process_one(message, started_at)
+                _set_setting("messenger_last_processed_at", datetime.utcnow().isoformat())
                 db.session.commit()
+            except Exception as exc:
+                db.session.rollback()
+                app.logger.warning("messenger.process_pending.error type=%s", type(exc).__name__)
+            finally:
+                duration = time.monotonic() - started_at
+                app.logger.warning("messenger.process_pending.finished duration=%.3f", duration)
+                db.session.remove()
 
-    def _process_one(message: MessengerMessage) -> None:
+    def _process_one(message: MessengerMessage, started_at: float | None = None) -> None:
         message.status = "processing"
         db.session.flush()
         conversation = db.session.get(MessengerConversation, message.conversation_id)
@@ -270,6 +299,8 @@ def init_messenger_assistant(
             message.error_message = "Conversation introuvable"
             return
         try:
+            if started_at is not None and time.monotonic() - started_at > PROCESSING_TIMEOUT_SECONDS:
+                raise TimeoutError("messenger processing timeout")
             if not _auto_reply_enabled():
                 message.status = "completed"
                 message.processed_at = datetime.utcnow()
@@ -304,6 +335,7 @@ def init_messenger_assistant(
                 app.logger.warning("messenger.openai_failed type=%s", type(exc).__name__)
                 reply = OPENAI_FALLBACK
                 conversation.needs_human = True
+                conversation.bot_paused = True
             reply, openai_requires_human = _clean_openai_reply(reply)
             _send_reply(conversation, reply)
             if openai_requires_human:
@@ -338,9 +370,9 @@ def init_messenger_assistant(
             .limit(history_limit)
         ).all()
         prompt = "\n".join(f"{item.direction}: {item.content}" for item in reversed(history))
-        response = OpenAI(api_key=api_key, timeout=20.0).responses.create(
+        response = OpenAI(api_key=api_key, timeout=15.0).responses.create(
             model=model,
-            instructions=_system_prompt(_site_knowledge()),
+            instructions=_system_prompt(_cached_site_knowledge()),
             input=prompt,
             store=False,
             max_output_tokens=350,
@@ -361,14 +393,38 @@ def init_messenger_assistant(
         db.session.add(MessengerMessage(conversation_id=conversation.id, meta_message_id=response_id, direction="outbound", message_type="text", content=text, status="completed", processed_at=datetime.utcnow()))
 
     def _site_knowledge() -> dict[str, Any]:
+        return refresh_site_knowledge()
+
+    def _cached_site_knowledge() -> dict[str, Any]:
         cached = db.session.get(SiteKnowledgeCache, "public_site")
-        if cached and cached.expires_at > datetime.utcnow():
+        if cached:
             return json.loads(cached.payload)
+        return _minimal_site_knowledge()
+
+    def refresh_site_knowledge() -> dict[str, Any]:
+        with app.app_context():
+            try:
+                return _refresh_site_knowledge()
+            except Exception as exc:
+                db.session.rollback()
+                app.logger.warning("messenger.site_knowledge_failed type=%s", type(exc).__name__)
+                return _cached_site_knowledge()
+            finally:
+                db.session.remove()
+
+    def _refresh_site_knowledge() -> dict[str, Any]:
+        started_at = time.monotonic()
+        cached = db.session.get(SiteKnowledgeCache, "public_site")
+        previous_payload = json.loads(cached.payload) if cached else None
+        if cached and cached.expires_at > datetime.utcnow():
+            return previous_payload or _minimal_site_knowledge()
         base_url = os.getenv("M2MALIN_SITE_URL") or os.getenv("SHOP_URL", "https://m2malin.fr")
-        payload = {"site": base_url, "products": [], "policies": []}
+        payload = _minimal_site_knowledge(base_url)
+        had_success = False
         try:
-            response = requests.get(f"{base_url.rstrip('/')}/products.json", timeout=10)
+            response = requests.get(f"{base_url.rstrip('/')}/products.json", timeout=8)
             if response.ok:
+                had_success = True
                 for product in response.json().get("products", [])[:30]:
                     variants = product.get("variants") or []
                     payload["products"].append(
@@ -383,11 +439,14 @@ def init_messenger_assistant(
         except Exception:
             payload["products_error"] = "Catalogue public indisponible."
         for policy_name, policy_path in POLICY_PATHS.items():
+            if time.monotonic() - started_at > 30:
+                break
             try:
-                response = requests.get(f"{base_url.rstrip()}{policy_path}", timeout=8)
+                response = requests.get(f"{base_url.rstrip()}{policy_path}", timeout=6)
                 if response.ok:
                     text = _clean_html(response.text)
                     if text:
+                        had_success = True
                         payload["policies"].append(
                             {
                                 "name": policy_name,
@@ -397,8 +456,21 @@ def init_messenger_assistant(
                         )
             except Exception:
                 continue
-        db.session.merge(SiteKnowledgeCache(cache_key="public_site", payload=json.dumps(payload, ensure_ascii=False), expires_at=datetime.utcnow() + timedelta(hours=6)))
+        if not had_success and previous_payload:
+            return previous_payload
+        db.session.merge(
+            SiteKnowledgeCache(
+                cache_key="public_site",
+                payload=json.dumps(payload, ensure_ascii=False),
+                expires_at=datetime.utcnow() + timedelta(hours=6),
+                updated_at=datetime.utcnow(),
+            )
+        )
+        db.session.commit()
         return payload
+
+    def _minimal_site_knowledge(base_url: str | None = None) -> dict[str, Any]:
+        return {"site": base_url or os.getenv("M2MALIN_SITE_URL") or os.getenv("SHOP_URL", "https://m2malin.fr"), "products": [], "policies": []}
 
     def _daily_limit_reached(conversation_id: int) -> bool:
         limit = int(os.getenv("MESSENGER_DAILY_REPLY_LIMIT", "20"))
@@ -426,6 +498,46 @@ def init_messenger_assistant(
             row.value = value
             row.updated_at = datetime.utcnow()
 
+    def _get_setting(key: str, default: str = "") -> str:
+        row = db.session.get(AppSetting, key)
+        return row.value if row else default
+
+    def _increment_setting(key: str) -> int:
+        value = int(_get_setting(key, "0") or "0") + 1
+        _set_setting(key, str(value))
+        return value
+
+    def _message_status_counts() -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for status in ("pending", "processing", "failed", "human_required"):
+            counts[status] = int(
+                db.session.scalar(select(db.func.count(MessengerMessage.id)).where(MessengerMessage.status == status)) or 0
+            )
+        return counts
+
+    def _diagnostics() -> dict[str, str]:
+        return {
+            "last_webhook_received_at": _get_setting("messenger_last_webhook_received_at"),
+            "last_queued_at": _get_setting("messenger_last_queued_at"),
+            "last_processed_at": _get_setting("messenger_last_processed_at"),
+            "invalid_signature_count": _get_setting("messenger_invalid_signature_count", "0"),
+        }
+
+    def reset_stuck_processing() -> int:
+        cutoff = datetime.utcnow() - timedelta(minutes=2)
+        rows = db.session.scalars(
+            select(MessengerMessage).where(
+                MessengerMessage.direction == "inbound",
+                MessengerMessage.status == "processing",
+                MessengerMessage.created_at <= cutoff,
+            )
+        ).all()
+        for row in rows:
+            row.status = "pending"
+            row.error_message = "Processing bloque remis en attente"
+            row.next_attempt_at = None
+        return len(rows)
+
     def _last_inbound_content(conversation_id: int) -> str:
         row = db.session.scalar(
             select(MessengerMessage)
@@ -435,7 +547,12 @@ def init_messenger_assistant(
         )
         return row.content if row and row.content else ""
 
-    return {"process_pending": process_pending, "site_knowledge": _site_knowledge}
+    return {
+        "process_pending": process_pending,
+        "site_knowledge": _site_knowledge,
+        "refresh_site_knowledge": refresh_site_knowledge,
+        "reset_stuck_processing": reset_stuck_processing,
+    }
 
 
 def _valid_meta_signature(raw_body: bytes, signature_header: str | None) -> bool:

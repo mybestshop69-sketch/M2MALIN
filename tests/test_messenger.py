@@ -5,6 +5,7 @@ import importlib
 import json
 import sys
 import types
+from datetime import datetime, timedelta
 
 from sqlalchemy import text
 
@@ -385,3 +386,169 @@ def test_retry_after_failed_message(monkeypatch):
     assert client.post(f"/messenger/messages/{message_id}/retry", headers=auth_headers(), data={"csrf_token": token}).status_code == 302
     with module.app.app_context():
         assert module.db.session.execute(text("select status from messenger_messages where id=:id"), {"id": message_id}).scalar() == "pending"
+
+
+def test_process_pending_always_finishes_and_removes_session(monkeypatch):
+    module = load_app(monkeypatch)
+    fake_openai(monkeypatch, output_text="Reponse test.")
+    fake_meta_send(monkeypatch, fail=True)
+    removed = []
+    original_remove = module.db.session.remove
+
+    def tracked_remove():
+        removed.append(True)
+        return original_remove()
+
+    monkeypatch.setattr(module.db.session, "remove", tracked_remove)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+
+    assert post_signed(client, payload()).status_code == 200
+    before_process = len(removed)
+    module.messenger_assistant["process_pending"]()
+
+    with module.app.app_context():
+        status = module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar()
+        assert status == "pending"
+        assert len(removed) > before_process
+
+
+def test_shopify_slow_call_does_not_block_messenger_processing(monkeypatch):
+    module = load_app(monkeypatch)
+    sent = []
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("Shopify ne doit pas etre appele pendant process_pending")
+
+    monkeypatch.setattr("messenger_assistant.requests.get", fail_if_called)
+    fake_openai(monkeypatch, output_text="Reponse depuis OpenAI.")
+    fake_meta_send(monkeypatch, sent)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+
+    assert post_signed(client, payload()).status_code == 200
+    module.messenger_assistant["process_pending"]()
+
+    with module.app.app_context():
+        assert sent[0]["text"] == "Reponse depuis OpenAI."
+        assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
+
+
+def test_openai_timeout_is_controlled_and_sends_fallback(monkeypatch):
+    module = load_app(monkeypatch)
+    sent = []
+    fake_openai(monkeypatch, error=TimeoutError("openai timeout"))
+    fake_meta_send(monkeypatch, sent)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+
+    assert post_signed(client, payload()).status_code == 200
+    module.messenger_assistant["process_pending"]()
+
+    with module.app.app_context():
+        row = module.db.session.execute(text("select needs_human, bot_paused from messenger_conversations")).first()
+        assert row == (1, 1)
+        assert "difficulte" in sent[0]["text"]
+
+
+def test_meta_timeout_is_controlled_and_retried(monkeypatch):
+    module = load_app(monkeypatch)
+    fake_openai(monkeypatch, output_text="Reponse test.")
+    fake_meta_send(monkeypatch, fail=True)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+
+    assert post_signed(client, payload()).status_code == 200
+    module.messenger_assistant["process_pending"]()
+
+    with module.app.app_context():
+        row = module.db.session.execute(
+            text("select status, retry_count, error_message from messenger_messages where direction='inbound'")
+        ).first()
+        assert row[0] == "pending"
+        assert row[1] == 1
+        assert row[2] == "RuntimeError"
+
+
+def test_stuck_processing_message_is_reset(monkeypatch):
+    module = load_app(monkeypatch)
+    client = module.app.test_client()
+
+    assert post_signed(client, payload()).status_code == 200
+    with module.app.app_context():
+        old = datetime.utcnow() - timedelta(minutes=3)
+        module.db.session.execute(
+            text("update messenger_messages set status='processing', created_at=:created_at"),
+            {"created_at": old},
+        )
+        module.db.session.commit()
+        count = module.messenger_assistant["reset_stuck_processing"]()
+        module.db.session.commit()
+        status = module.db.session.execute(text("select status from messenger_messages")).scalar()
+
+    assert count == 1
+    assert status == "pending"
+
+
+def test_valid_webhook_is_logged(monkeypatch, caplog):
+    module = load_app(monkeypatch)
+    client = module.app.test_client()
+    caplog.set_level("WARNING")
+
+    assert post_signed(client, payload()).status_code == 200
+
+    assert "messenger.webhook.received" in caplog.text
+    assert "messenger.webhook.queued count=1" in caplog.text
+
+
+def test_invalid_signature_is_logged_and_counted(monkeypatch, caplog):
+    module = load_app(monkeypatch)
+    client = module.app.test_client()
+    caplog.set_level("WARNING")
+    body = json.dumps(payload()).encode()
+
+    response = client.post(
+        "/webhooks/meta",
+        data=body,
+        content_type="application/json",
+        headers={"X-Hub-Signature-256": "sha256=bad"},
+    )
+
+    assert response.status_code == 403
+    assert "messenger.webhook.invalid_signature" in caplog.text
+    with module.app.app_context():
+        assert module.db.session.execute(
+            text("select value from app_settings where key='messenger_invalid_signature_count'")
+        ).scalar() == "1"
+
+
+def test_next_message_is_processed_after_previous_failure(monkeypatch):
+    module = load_app(monkeypatch)
+    fake_openai(monkeypatch, output_text="Reponse test.")
+    sends = {"count": 0}
+
+    def flaky_send(self, page_id, psid, text_value):
+        sends["count"] += 1
+        if sends["count"] == 1:
+            raise RuntimeError("meta down")
+        return [{"message_id": f"out-{sends['count']}"}]
+
+    monkeypatch.setattr("services.MetaClient.send_text_message", flaky_send)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+
+    assert post_signed(client, payload(mid="mid-1", sender="user-1")).status_code == 200
+    assert post_signed(client, payload(mid="mid-2", sender="user-2")).status_code == 200
+    module.messenger_assistant["process_pending"]()
+    module.messenger_assistant["process_pending"]()
+
+    with module.app.app_context():
+        rows = module.db.session.execute(
+            text("select status from messenger_messages where direction='inbound' order by id")
+        ).all()
+        assert [row[0] for row in rows] == ["pending", "completed"]

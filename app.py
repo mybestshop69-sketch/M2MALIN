@@ -537,6 +537,8 @@ messenger_assistant = init_messenger_assistant(
 
 with app.app_context():
     db.create_all()
+    messenger_assistant["reset_stuck_processing"]()
+    db.session.commit()
 
 scheduler = BackgroundScheduler(
     timezone=os.getenv("DEFAULT_TIMEZONE", "Europe/Paris"),
@@ -553,10 +555,20 @@ scheduler.add_job(
 scheduler.add_job(
     messenger_assistant["process_pending"],
     "interval",
-    seconds=7,
+    seconds=15,
     id="messenger-pending-messages",
     max_instances=1,
     coalesce=True,
+    misfire_grace_time=30,
+)
+scheduler.add_job(
+    messenger_assistant["refresh_site_knowledge"],
+    "interval",
+    hours=6,
+    id="messenger-refresh-site-knowledge",
+    max_instances=1,
+    coalesce=True,
+    misfire_grace_time=300,
 )
 if not app.testing and os.getenv("DISABLE_SCHEDULER", "false").lower() != "true":
     scheduler.start()
