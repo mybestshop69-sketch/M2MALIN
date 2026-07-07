@@ -48,6 +48,22 @@
     <button type="submit">Verifier la configuration Meta</button>
   </form>
   <div class="grid cards">
+    <article class="card"><h3>Controle token Page</h3><p>{{ diagnostics.meta_token_checked_at or "Jamais" }}</p></article>
+    <article class="card"><h3>Token App ID</h3><p>{{ diagnostics.meta_token_app_id_detected or "Non verifie" }}</p></article>
+    <article class="card"><h3>Token bonne app</h3><p>{{ "oui" if diagnostics.meta_token_app_valid == "true" else "non" }}</p></article>
+    <article class="card"><h3>Page ID token</h3><p>{{ diagnostics.meta_token_page_id or "Non verifiee" }}</p></article>
+    <article class="card"><h3>Token bonne page</h3><p>{{ "oui" if diagnostics.meta_token_page_id_valid == "true" else "non" }}</p></article>
+    <article class="card"><h3>Expiration token</h3><p>{{ diagnostics.meta_token_expires_at or "Non verifiee" }}</p></article>
+    <article class="card"><h3>Permissions manquantes</h3><p>{{ diagnostics.meta_token_missing_permissions or "Aucune" }}</p></article>
+    <article class="card"><h3>Permissions OK</h3><p>{{ "oui" if diagnostics.meta_token_permissions_valid == "true" else "non" }}</p></article>
+    <article class="card"><h3>Abonnement messages</h3><p>{{ "oui" if diagnostics.meta_token_subscription_messages == "true" else "non" }}</p></article>
+    <article class="card"><h3>Abonnement postbacks</h3><p>{{ "oui" if diagnostics.meta_token_subscription_postbacks == "true" else "non" }}</p></article>
+  </div>
+  <form method="post" action="{{ url_for('check_meta_token') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit">Verifier le token Page et les abonnements</button>
+  </form>
+  <div class="grid cards">
     <article class="card"><h3>Dernier webhook recu</h3><p>{{ diagnostics.last_webhook_received_at or "Jamais" }}</p></article>
     <article class="card"><h3>Signature presente</h3><p>{{ "oui" if diagnostics.last_signature_present == "true" else "non" }}</p></article>
     <article class="card"><h3>Derniere signature valide</h3><p>{{ diagnostics.last_signature_valid_at or "Jamais" }}</p></article>

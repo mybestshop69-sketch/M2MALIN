@@ -318,6 +318,109 @@ def test_dashboard_meta_configuration_check_detects_wrong_app(monkeypatch):
         assert module.db.session.execute(text("select value from app_settings where key='messenger_meta_expected_app_id'")).scalar() == "1551714796659004"
 
 
+def test_dashboard_meta_token_check_validates_page_token_and_subscription(monkeypatch):
+    monkeypatch.setenv("META_APP_ID", "1551714796659004")
+    module = load_app(monkeypatch)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+
+    class FakeResponse:
+        ok = True
+
+        def __init__(self, payload_value):
+            self.payload_value = payload_value
+
+        def json(self):
+            return self.payload_value
+
+    def fake_get(url, **kwargs):
+        if url.endswith("/debug_token"):
+            return FakeResponse(
+                {
+                    "data": {
+                        "app_id": "1551714796659004",
+                        "profile_id": "1163222070213376",
+                        "expires_at": 0,
+                        "scopes": "pages_messaging,pages_manage_metadata,pages_show_list,pages_read_engagement",
+                    }
+                }
+            )
+        return FakeResponse(
+            {
+                "data": [
+                    {
+                        "id": "1551714796659004",
+                        "subscribed_fields": ["messages", "messaging_postbacks"],
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("messenger_assistant.requests.get", fake_get)
+    token = csrf_token(client)
+
+    assert client.post("/messenger/check-meta-token", headers=auth_headers(), data={"csrf_token": token}).status_code == 302
+    with module.app.app_context():
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_meta_token_token_app_valid'")).scalar() == "true"
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_meta_token_page_id_valid'")).scalar() == "true"
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_meta_token_permissions_valid'")).scalar() == "true"
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_meta_token_subscription_valid'")).scalar() == "true"
+
+
+def test_dashboard_meta_token_check_detects_old_app_and_missing_subscription(monkeypatch):
+    monkeypatch.setenv("META_APP_ID", "1551714796659004")
+    module = load_app(monkeypatch)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+
+    class FakeResponse:
+        ok = True
+
+        def __init__(self, payload_value):
+            self.payload_value = payload_value
+
+        def json(self):
+            return self.payload_value
+
+    def fake_get(url, **kwargs):
+        if url.endswith("/debug_token"):
+            return FakeResponse(
+                {
+                    "data": {
+                        "app_id": "4419342638395501",
+                        "profile_id": "1163222070213376",
+                        "expires_at": 123,
+                        "scopes": "pages_messaging,pages_show_list",
+                    }
+                }
+            )
+        return FakeResponse(
+            {
+                "data": [
+                    {
+                        "id": "1551714796659004",
+                        "subscribed_fields": ["messages"],
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("messenger_assistant.requests.get", fake_get)
+    token = csrf_token(client)
+
+    assert client.post("/messenger/check-meta-token", headers=auth_headers(), data={"csrf_token": token}).status_code == 302
+    with module.app.app_context():
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_meta_token_token_app_valid'")).scalar() == "false"
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_meta_token_page_id_valid'")).scalar() == "true"
+        missing = module.db.session.execute(text("select value from app_settings where key='messenger_meta_token_missing_permissions'")).scalar()
+        assert "pages_manage_metadata" in missing
+        assert "pages_read_engagement" in missing
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_meta_token_subscription_postbacks'")).scalar() == "false"
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_meta_token_subscription_valid'")).scalar() == "false"
+
+
 def test_auto_disabled_does_not_send(monkeypatch):
     monkeypatch.setenv("MESSENGER_AUTO_REPLY_ENABLED", "false")
     module = load_app(monkeypatch)

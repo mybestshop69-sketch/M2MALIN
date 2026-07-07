@@ -37,6 +37,14 @@ HUMAN_REQUIRED_MARKER = "[HUMAN_REQUIRED]"
 PROCESSING_TIMEOUT_SECONDS = 45
 DELIVERY_FALLBACK_MESSAGE = "Les delais de livraison peuvent varier selon le produit. Ils sont indiques sur la fiche du produit et lors de la validation de la commande. Envoyez-moi le nom ou le lien du produit concerne afin que je verifie le delai correspondant."
 EXPECTED_META_APP_ID = "1551714796659004"
+EXPECTED_META_PAGE_ID = "1163222070213376"
+REQUIRED_META_SCOPES = {
+    "pages_messaging",
+    "pages_manage_metadata",
+    "pages_show_list",
+    "pages_read_engagement",
+}
+REQUIRED_MESSENGER_FIELDS = {"messages", "messaging_postbacks"}
 POLICY_PATHS = {
     "livraison": "/policies/shipping-policy",
     "retours": "/policies/refund-policy",
@@ -192,6 +200,23 @@ def init_messenger_assistant(
             flash("Configuration Meta valide pour l'application M2Malin Social Manager.", "success")
         else:
             flash("Configuration Meta a corriger : l'App ID ou le secret ne correspond pas a l'application attendue.", "error")
+        return redirect(url_for("messenger_dashboard"))
+
+    @app.post("/messenger/check-meta-token")
+    def check_meta_token():
+        result = _check_meta_token()
+        for key, value in result.items():
+            if isinstance(value, (list, tuple, set)):
+                stored = ",".join(str(item) for item in value)
+            else:
+                stored = str(value).lower() if isinstance(value, bool) else str(value or "")
+            _set_setting(f"messenger_meta_token_{key}", stored)
+        _set_setting("messenger_meta_token_checked_at", datetime.utcnow().isoformat())
+        db.session.commit()
+        if result["token_app_valid"] and result["page_id_valid"] and result["permissions_valid"] and result["subscription_valid"]:
+            flash("Token de Page Meta et abonnements Messenger valides.", "success")
+        else:
+            flash("Token de Page Meta ou abonnements Messenger a corriger.", "error")
         return redirect(url_for("messenger_dashboard"))
 
     @app.post("/messenger/activate-meta")
@@ -567,6 +592,17 @@ def init_messenger_assistant(
             "meta_app_id_detected": _get_setting("messenger_meta_app_id_detected"),
             "meta_expected_app_id": _get_setting("messenger_meta_expected_app_id", EXPECTED_META_APP_ID),
             "meta_app_secret_valid": _get_setting("messenger_meta_app_secret_valid"),
+            "meta_token_checked_at": _get_setting("messenger_meta_token_checked_at"),
+            "meta_token_app_valid": _get_setting("messenger_meta_token_token_app_valid"),
+            "meta_token_app_id_detected": _get_setting("messenger_meta_token_app_id_detected"),
+            "meta_token_page_id": _get_setting("messenger_meta_token_page_id"),
+            "meta_token_page_id_valid": _get_setting("messenger_meta_token_page_id_valid"),
+            "meta_token_expires_at": _get_setting("messenger_meta_token_expires_at"),
+            "meta_token_missing_permissions": _get_setting("messenger_meta_token_missing_permissions"),
+            "meta_token_permissions_valid": _get_setting("messenger_meta_token_permissions_valid"),
+            "meta_token_subscription_messages": _get_setting("messenger_meta_token_subscription_messages"),
+            "meta_token_subscription_postbacks": _get_setting("messenger_meta_token_subscription_postbacks"),
+            "meta_token_subscription_valid": _get_setting("messenger_meta_token_subscription_valid"),
         }
 
     def _check_meta_configuration() -> dict[str, str | bool]:
@@ -595,6 +631,59 @@ def init_messenger_assistant(
         result["app_id_detected"] = detected
         result["app_secret_valid"] = detected == app_id
         result["app_id_valid"] = app_id == EXPECTED_META_APP_ID and detected == EXPECTED_META_APP_ID
+        return result
+
+    def _check_meta_token() -> dict[str, str | bool | list[str]]:
+        result: dict[str, str | bool | list[str]] = {
+            "token_app_valid": False,
+            "app_id_detected": "",
+            "page_id": "",
+            "page_id_valid": False,
+            "expires_at": "",
+            "missing_permissions": sorted(REQUIRED_META_SCOPES),
+            "permissions_valid": False,
+            "subscription_messages": False,
+            "subscription_postbacks": False,
+            "subscription_valid": False,
+        }
+        app_id = os.getenv("META_APP_ID", "")
+        app_secret = os.getenv("META_APP_SECRET", "")
+        meta_connection = db.session.scalar(select(connection_model).where(connection_model.platform == "meta"))
+        if not app_id or not app_secret or not meta_connection:
+            return result
+        page_id = meta_connection.page_id or EXPECTED_META_PAGE_ID
+        try:
+            page_token = decrypt_secret(meta_connection.access_token_encrypted)
+            debug_response = requests.get(
+                f"https://graph.facebook.com/{os.getenv('META_GRAPH_VERSION', 'v23.0')}/debug_token",
+                params={"input_token": page_token, "access_token": f"{app_id}|{app_secret}"},
+                timeout=10,
+            )
+            if debug_response.ok:
+                data = (debug_response.json() or {}).get("data") or {}
+                scopes = set(str(data.get("scopes") or "").split(","))
+                detected_app_id = str(data.get("app_id") or "")
+                detected_page_id = str(data.get("profile_id") or page_id or "")
+                missing = sorted(REQUIRED_META_SCOPES - scopes)
+                result["app_id_detected"] = detected_app_id
+                result["page_id"] = detected_page_id
+                result["expires_at"] = str(data.get("expires_at") or "")
+                result["missing_permissions"] = missing
+                result["token_app_valid"] = detected_app_id == EXPECTED_META_APP_ID
+                result["page_id_valid"] = detected_page_id == EXPECTED_META_PAGE_ID
+                result["permissions_valid"] = not missing
+            subscription_response = requests.get(
+                f"https://graph.facebook.com/{os.getenv('META_GRAPH_VERSION', 'v23.0')}/{page_id}/subscribed_apps",
+                params={"access_token": page_token},
+                timeout=10,
+            )
+            if subscription_response.ok:
+                fields = _subscription_fields(subscription_response.json() or {}, app_id)
+                result["subscription_messages"] = "messages" in fields
+                result["subscription_postbacks"] = "messaging_postbacks" in fields
+                result["subscription_valid"] = REQUIRED_MESSENGER_FIELDS.issubset(fields)
+        except Exception as exc:
+            app.logger.warning("messenger.meta_token_check_failed type=%s", type(exc).__name__)
         return result
 
     def reset_stuck_processing() -> int:
@@ -757,6 +846,26 @@ def _safe_error_message(exc: Exception) -> str:
     cleaned = cleaned.replace("\n", " ").replace("\r", " ")
     prefix = type(exc).__name__
     return f"{prefix}: {cleaned[:240]}" if cleaned else prefix
+
+
+def _subscription_fields(payload: dict[str, Any], app_id: str) -> set[str]:
+    fields: set[str] = set()
+    for item in payload.get("data") or []:
+        item_app_id = str(item.get("id") or "")
+        if item_app_id and app_id and item_app_id != app_id:
+            continue
+        raw_fields = item.get("subscribed_fields") or item.get("fields") or []
+        if isinstance(raw_fields, str):
+            fields.update(part.strip() for part in raw_fields.split(",") if part.strip())
+        else:
+            for field in raw_fields:
+                if isinstance(field, dict):
+                    value = field.get("name") or field.get("field")
+                else:
+                    value = field
+                if value:
+                    fields.add(str(value))
+    return fields
 
 
 def _clean_html(raw_html: str, limit: int = 1500) -> str:
