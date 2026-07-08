@@ -382,6 +382,58 @@ def test_dashboard_meta_token_check_validates_page_token_and_subscription(monkey
         assert module.db.session.execute(text("select value from app_settings where key='messenger_meta_token_subscription_valid'")).scalar() == "true"
 
 
+def test_dashboard_meta_token_check_accepts_list_scopes(monkeypatch):
+    monkeypatch.setenv("META_APP_ID", "1551714796659004")
+    module = load_app(monkeypatch)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+
+    class FakeResponse:
+        ok = True
+
+        def __init__(self, payload_value):
+            self.payload_value = payload_value
+
+        def json(self):
+            return self.payload_value
+
+    def fake_get(url, **kwargs):
+        if url.endswith("/debug_token"):
+            return FakeResponse(
+                {
+                    "data": {
+                        "app_id": "1551714796659004",
+                        "profile_id": "1163222070213376",
+                        "scopes": [
+                            "pages_messaging",
+                            "pages_manage_metadata",
+                            "pages_show_list",
+                            "pages_read_engagement",
+                        ],
+                    }
+                }
+            )
+        return FakeResponse(
+            {
+                "data": [
+                    {
+                        "id": "1551714796659004",
+                        "subscribed_fields": ["messages", "messaging_postbacks"],
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("messenger_assistant.requests.get", fake_get)
+    token = csrf_token(client)
+
+    assert client.post("/messenger/check-meta-token", headers=auth_headers(), data={"csrf_token": token}).status_code == 302
+    with module.app.app_context():
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_meta_token_missing_permissions'")).scalar() == ""
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_meta_token_permissions_valid'")).scalar() == "true"
+
+
 def test_dashboard_meta_token_check_detects_old_app_and_missing_subscription(monkeypatch):
     monkeypatch.setenv("META_APP_ID", "1551714796659004")
     module = load_app(monkeypatch)
@@ -902,6 +954,27 @@ def test_token_debug_detects_wrong_meta_application():
     assert summary["token_app_id_detected"] == "4419342638395501"
     assert summary["page_id"] == "1163222070213376"
     assert "pages_manage_metadata" in summary["missing_scopes"]
+
+
+def test_token_debug_accepts_list_scopes():
+    script = load_meta_check_script()
+
+    summary = script.summarize_token_debug(
+        {
+            "data": {
+                "app_id": "1551714796659004",
+                "profile_id": "1163222070213376",
+                "scopes": [
+                    "pages_messaging",
+                    "pages_manage_metadata",
+                    "pages_show_list",
+                    "pages_read_engagement",
+                ],
+            }
+        }
+    )
+
+    assert summary["missing_scopes"] == []
 
 
 def test_real_messenger_message_flow_with_secure_logs(monkeypatch, caplog):

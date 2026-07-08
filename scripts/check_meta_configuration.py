@@ -53,7 +53,7 @@ def check_meta_app_credentials(
 
 def summarize_token_debug(payload: dict[str, Any], expected_app_id: str = EXPECTED_APP_ID) -> dict[str, Any]:
     data = payload.get("data") or {}
-    scopes = set(str(data.get("scopes") or "").split(","))
+    scopes = meta_scopes(data.get("scopes"))
     app_id = str(data.get("app_id") or "")
     return {
         "token_app_valid": app_id == expected_app_id,
@@ -62,6 +62,22 @@ def summarize_token_debug(payload: dict[str, Any], expected_app_id: str = EXPECT
         "expires_at": data.get("expires_at"),
         "missing_scopes": sorted(REQUIRED_SCOPES - scopes),
     }
+
+
+def meta_scopes(raw_scopes: Any) -> set[str]:
+    if isinstance(raw_scopes, str):
+        return {scope.strip() for scope in raw_scopes.split(",") if scope.strip()}
+    if isinstance(raw_scopes, list):
+        scopes: set[str] = set()
+        for item in raw_scopes:
+            if isinstance(item, dict):
+                value = item.get("name") or item.get("scope")
+            else:
+                value = item
+            if value:
+                scopes.add(str(value).strip())
+        return {scope for scope in scopes if scope}
+    return set()
 
 
 def main() -> int:

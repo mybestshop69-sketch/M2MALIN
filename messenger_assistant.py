@@ -661,7 +661,7 @@ def init_messenger_assistant(
             )
             if debug_response.ok:
                 data = (debug_response.json() or {}).get("data") or {}
-                scopes = set(str(data.get("scopes") or "").split(","))
+                scopes = _meta_scopes(data.get("scopes"))
                 detected_app_id = str(data.get("app_id") or "")
                 detected_page_id = str(data.get("profile_id") or page_id or "")
                 missing = sorted(REQUIRED_META_SCOPES - scopes)
@@ -866,6 +866,22 @@ def _subscription_fields(payload: dict[str, Any], app_id: str) -> set[str]:
                 if value:
                     fields.add(str(value))
     return fields
+
+
+def _meta_scopes(raw_scopes: Any) -> set[str]:
+    if isinstance(raw_scopes, str):
+        return {scope.strip() for scope in raw_scopes.split(",") if scope.strip()}
+    if isinstance(raw_scopes, list):
+        scopes: set[str] = set()
+        for item in raw_scopes:
+            if isinstance(item, dict):
+                value = item.get("name") or item.get("scope")
+            else:
+                value = item
+            if value:
+                scopes.add(str(value).strip())
+        return {scope for scope in scopes if scope}
+    return set()
 
 
 def _clean_html(raw_html: str, limit: int = 1500) -> str:
