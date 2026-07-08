@@ -710,6 +710,25 @@ def test_greeting_gets_immediate_webhook_reply(monkeypatch):
         assert module.db.session.execute(text("select value from app_settings where key='messenger_last_openai_model'")).scalar() == "reponse_locale"
 
 
+def test_greeting_with_name_gets_immediate_webhook_reply(monkeypatch):
+    module = load_app(monkeypatch)
+    sent = []
+    fake_meta_send(monkeypatch, sent)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+        module.db.session.execute(text("insert into app_settings(key, value, updated_at) values('messenger_auto_reply_mode', 'force_on', CURRENT_TIMESTAMP)"))
+        module.db.session.commit()
+
+    response = post_signed(client, payload(text="bonjour je mappelle najim"))
+
+    assert response.status_code == 200
+    with module.app.app_context():
+        assert sent[0]["text"] == "Bonjour. Merci d'avoir contacte M2 Malin. Comment puis-je vous aider aujourd'hui ? Vous pouvez me poser une question sur un produit, la livraison, une commande ou un retour."
+        assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_last_openai_model'")).scalar() == "reponse_locale"
+
+
 def test_location_question_gets_immediate_webhook_reply(monkeypatch):
     module = load_app(monkeypatch)
     sent = []

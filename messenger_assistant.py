@@ -1552,7 +1552,17 @@ def _is_greeting(content: str) -> bool:
     normalized = _normalize_text(content)
     compact = re.sub(r"[^a-z0-9 ]+", " ", normalized)
     words = compact.split()
-    return 0 < len(words) <= 3 and any(word in {"bonjour", "salut", "hello", "bonsoir", "coucou", "bjr", "slt"} for word in words)
+    greeting_words = {"bonjour", "salut", "hello", "bonsoir", "coucou", "bjr", "slt"}
+    introduction_markers = (
+        "je m appelle",
+        "je mappelle",
+        "moi c est",
+        "mon nom est",
+        "je suis",
+    )
+    if 0 < len(words) <= 3 and any(word in greeting_words for word in words):
+        return True
+    return any(word in greeting_words for word in words[:3]) and any(marker in compact for marker in introduction_markers)
 
 
 def _is_delivery_question(content: str) -> bool:
