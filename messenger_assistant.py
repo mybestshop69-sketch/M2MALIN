@@ -535,8 +535,8 @@ def init_messenger_assistant(
 
     def _openai_reply(conversation: MessengerConversation) -> str:
         api_key = os.getenv("OPENAI_API_KEY", "")
-        model = os.getenv("OPENAI_MODEL", "")
-        if not api_key or not model:
+        primary_model = os.getenv("OPENAI_MODEL", "")
+        if not api_key or not primary_model:
             raise RuntimeError("OpenAI non configure")
         from openai import OpenAI
 
@@ -548,16 +548,37 @@ def init_messenger_assistant(
             .limit(history_limit)
         ).all()
         prompt = "\n".join(f"{item.direction}: {item.content}" for item in reversed(history))
-        response = OpenAI(api_key=api_key, timeout=15.0).responses.create(
-            model=model,
-            instructions=_system_prompt(_cached_site_knowledge()),
-            input=prompt,
-            store=False,
-            max_output_tokens=350,
-            safety_identifier=conversation.sender_hash,
-        )
-        text = getattr(response, "output_text", "") or ""
-        return text.strip()[:1900] or OPENAI_FALLBACK
+        instructions = _system_prompt(_cached_site_knowledge())
+        client = OpenAI(api_key=api_key, timeout=15.0)
+        fallback_model = os.getenv("OPENAI_FALLBACK_MODEL", "gpt-4.1-mini").strip()
+        models = [primary_model.strip()]
+        if fallback_model and fallback_model not in models:
+            models.append(fallback_model)
+        last_exc: Exception | None = None
+
+        for index, model in enumerate(models):
+            try:
+                response = client.responses.create(
+                    model=model,
+                    instructions=instructions,
+                    input=prompt,
+                    store=False,
+                    max_output_tokens=350,
+                    safety_identifier=conversation.sender_hash,
+                )
+                _set_setting("messenger_last_openai_model", model)
+                _set_setting("messenger_last_openai_fallback_used", "true" if index else "false")
+                text = getattr(response, "output_text", "") or ""
+                return text.strip()[:1900] or OPENAI_FALLBACK
+            except Exception as exc:
+                last_exc = exc
+                if index == 0 and len(models) > 1 and _should_retry_openai_with_fallback(exc):
+                    app.logger.warning("messenger.openai_model_fallback from_primary=true")
+                    continue
+                raise
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("OpenAI non configure")
 
     def _send_reply(conversation: MessengerConversation, text: str) -> None:
         meta_connection = db.session.scalar(select(connection_model).where(connection_model.platform == "meta"))
@@ -758,6 +779,8 @@ def init_messenger_assistant(
             "last_inbox_sync_at": _get_setting("messenger_last_inbox_sync_at"),
             "last_openai_status": _get_setting("messenger_last_openai_status"),
             "last_openai_error": _get_setting("messenger_last_openai_error"),
+            "last_openai_model": _get_setting("messenger_last_openai_model"),
+            "last_openai_fallback_used": _get_setting("messenger_last_openai_fallback_used", "false"),
             "last_header_signature_256_present": _get_setting("messenger_last_header_signature_256_present", "false"),
             "last_header_signature_sha1_present": _get_setting("messenger_last_header_signature_sha1_present", "false"),
             "last_header_content_type_present": _get_setting("messenger_last_header_content_type_present", "false"),
@@ -1140,6 +1163,16 @@ def _needs_human(content: str) -> bool:
 def _normalize_text(content: str) -> str:
     normalized = unicodedata.normalize("NFKD", content).encode("ascii", "ignore").decode("ascii")
     return " ".join(normalized.lower().split())
+
+
+def _should_retry_openai_with_fallback(exc: Exception) -> bool:
+    message = _normalize_text(str(exc))
+    return (
+        "must be verified" in message
+        or "verify organization" in message
+        or ("model" in message and "notfound" in message)
+        or ("model" in message and "not found" in message)
+    )
 
 
 def _clean_openai_reply(reply: str) -> tuple[str, bool]:

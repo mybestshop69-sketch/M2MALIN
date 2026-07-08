@@ -586,6 +586,44 @@ def test_openai_failure_records_safe_diagnostic(monkeypatch):
         assert module.db.session.execute(text("select value from app_settings where key='messenger_last_openai_status'")).scalar() == "failed"
 
 
+def test_openai_verification_error_falls_back_to_older_model(monkeypatch):
+    module = load_app(monkeypatch)
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-5-mini")
+    monkeypatch.setenv("OPENAI_FALLBACK_MODEL", "gpt-4.1-mini")
+    sent = []
+    calls = []
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            calls.append(kwargs["model"])
+            if kwargs["model"] == "gpt-5-mini":
+                raise RuntimeError("Your organization must be verified to use the model `gpt-5-mini`.")
+            return types.SimpleNamespace(output_text="Reponse avec modele de secours.")
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.responses = FakeResponses()
+
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=FakeOpenAI))
+    fake_meta_send(monkeypatch, sent)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+        module.db.session.execute(text("insert into app_settings(key, value, updated_at) values('messenger_auto_reply_mode', 'force_on', CURRENT_TIMESTAMP)"))
+        module.db.session.commit()
+
+    assert post_signed(client, payload(text="Bonjour, vous vendez quoi ?")).status_code == 200
+    module.messenger_assistant["process_pending"]()
+
+    with module.app.app_context():
+        assert calls == ["gpt-5-mini", "gpt-4.1-mini"]
+        assert sent[0]["text"] == "Reponse avec modele de secours."
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_last_openai_status'")).scalar() == "ok"
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_last_openai_model'")).scalar() == "gpt-4.1-mini"
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_last_openai_fallback_used'")).scalar() == "true"
+        assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
+
+
 def test_retry_human_required_button_uses_csrf(monkeypatch):
     module = load_app(monkeypatch)
     client = module.app.test_client()

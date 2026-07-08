@@ -101,6 +101,8 @@
     <article class="card"><h3>Dernier message envoye</h3><p>{{ diagnostics.last_message_sent_at or "Jamais" }}</p></article>
     <article class="card"><h3>Derniere synchro Meta</h3><p>{{ diagnostics.last_inbox_sync_at or "Jamais" }}</p></article>
     <article class="card"><h3>Dernier statut OpenAI</h3><p>{{ diagnostics.last_openai_status or "Jamais" }}</p></article>
+    <article class="card"><h3>Dernier modele OpenAI</h3><p>{{ diagnostics.last_openai_model or "Jamais" }}</p></article>
+    <article class="card"><h3>Secours OpenAI utilise</h3><p>{{ "oui" if diagnostics.last_openai_fallback_used == "true" else "non" }}</p></article>
     <article class="card"><h3>Derniere erreur OpenAI</h3><p>{{ diagnostics.last_openai_error or "Aucune" }}</p></article>
     <article class="card"><h3>Signatures refusees</h3><p>{{ diagnostics.invalid_signature_count }}</p></article>
   </div>
