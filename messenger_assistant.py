@@ -36,6 +36,9 @@ HUMAN_VERIFY_MESSAGE = "Je préfère vérifier cette information plutôt que de 
 HUMAN_REQUIRED_MARKER = "[HUMAN_REQUIRED]"
 PROCESSING_TIMEOUT_SECONDS = 45
 DELIVERY_FALLBACK_MESSAGE = "Les delais de livraison peuvent varier selon le produit. Ils sont indiques sur la fiche du produit et lors de la validation de la commande. Envoyez-moi le nom ou le lien du produit concerne afin que je verifie le delai correspondant."
+LOCATION_FALLBACK_MESSAGE = "M2 Malin est une boutique francaise basee a Aix-en-Provence. Vous pouvez decouvrir la boutique ici : https://m2malin.fr"
+HOURS_FALLBACK_MESSAGE = "Nous vous repondons du lundi au vendredi, de 9 h a 18 h. Vous pouvez aussi consulter la boutique ici : https://m2malin.fr"
+WEBSITE_FALLBACK_MESSAGE = "Voici le site officiel M2 Malin : https://m2malin.fr"
 EXPECTED_META_APP_ID = "1551714796659004"
 EXPECTED_META_PAGE_ID = "1163222070213376"
 REQUIRED_META_SCOPES = {
@@ -444,18 +447,20 @@ def init_messenger_assistant(
                 message.status = "human_required"
                 message.processed_at = datetime.utcnow()
                 return
+            reply_requires_human = False
             try:
                 reply = _openai_reply(conversation)
                 app.logger.warning("messenger.openai.completed")
             except Exception as exc:
                 app.logger.warning("messenger.openai_failed type=%s", type(exc).__name__)
-                reply = OPENAI_FALLBACK
-                conversation.needs_human = True
-                conversation.bot_paused = True
+                reply, reply_requires_human = _fallback_reply_for_content(message.content or "", _cached_site_knowledge())
+                if reply_requires_human:
+                    conversation.needs_human = True
+                    conversation.bot_paused = True
             reply = _ensure_delivery_answer(message.content or "", reply, _cached_site_knowledge())
             reply, openai_requires_human = _clean_openai_reply(reply)
             _send_reply(conversation, reply)
-            if openai_requires_human:
+            if openai_requires_human or reply_requires_human:
                 conversation.needs_human = True
                 conversation.bot_paused = True
                 message.status = "human_required"
@@ -950,9 +955,43 @@ def _ensure_delivery_answer(content: str, reply: str, knowledge: dict[str, Any] 
     return DELIVERY_FALLBACK_MESSAGE
 
 
+def _fallback_reply_for_content(content: str, knowledge: dict[str, Any] | None = None) -> tuple[str, bool]:
+    if _is_delivery_question(content):
+        return _ensure_delivery_answer(content, "", knowledge or {}), False
+    if _is_location_question(content):
+        return LOCATION_FALLBACK_MESSAGE, False
+    if _is_hours_question(content):
+        return HOURS_FALLBACK_MESSAGE, False
+    if _is_website_question(content):
+        return WEBSITE_FALLBACK_MESSAGE, False
+    return OPENAI_FALLBACK, True
+
+
 def _is_delivery_question(content: str) -> bool:
     normalized = _normalize_text(content)
     return "livraison" in normalized or "delai" in normalized or "delais" in normalized or "expedition" in normalized
+
+
+def _is_location_question(content: str) -> bool:
+    normalized = _normalize_text(content)
+    return (
+        "ou vous trouvez vous" in normalized
+        or "ou vous trouvez-vous" in normalized
+        or "ou etes vous" in normalized
+        or "votre adresse" in normalized
+        or "vous etes ou" in normalized
+        or "localisation" in normalized
+    )
+
+
+def _is_hours_question(content: str) -> bool:
+    normalized = _normalize_text(content)
+    return "horaire" in normalized or "ouvert" in normalized or "ferme" in normalized or "disponible" in normalized
+
+
+def _is_website_question(content: str) -> bool:
+    normalized = _normalize_text(content)
+    return "site internet" in normalized or "votre site" in normalized or "lien boutique" in normalized or "boutique en ligne" in normalized
 
 
 def _looks_like_delivery_answer(reply: str) -> bool:

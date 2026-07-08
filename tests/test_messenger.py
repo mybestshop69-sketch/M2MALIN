@@ -678,6 +678,43 @@ def test_openai_failure_sends_fallback(monkeypatch):
         assert "difficulte" in sent[0]["text"]
 
 
+def test_openai_failure_delivery_question_gets_useful_fallback(monkeypatch):
+    module = load_app(monkeypatch)
+    sent = []
+    fake_openai(monkeypatch, error=RuntimeError("openai down"))
+    fake_meta_send(monkeypatch, sent)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+
+    assert post_signed(client, payload(text="Quels sont vos delais de livraison ?")).status_code == 200
+    module.messenger_assistant["process_pending"]()
+
+    with module.app.app_context():
+        row = module.db.session.execute(text("select needs_human, bot_paused from messenger_conversations")).first()
+        status = module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar()
+        assert row == (0, 0)
+        assert status == "completed"
+        assert "delais de livraison" in sent[0]["text"]
+
+
+def test_openai_failure_location_question_gets_useful_fallback(monkeypatch):
+    module = load_app(monkeypatch)
+    sent = []
+    fake_openai(monkeypatch, error=RuntimeError("openai down"))
+    fake_meta_send(monkeypatch, sent)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+
+    assert post_signed(client, payload(text="Ou vous trouvez-vous ?")).status_code == 200
+    module.messenger_assistant["process_pending"]()
+
+    with module.app.app_context():
+        assert module.db.session.execute(text("select needs_human from messenger_conversations")).scalar() == 0
+        assert sent[0]["text"] == "M2 Malin est une boutique francaise basee a Aix-en-Provence. Vous pouvez decouvrir la boutique ici : https://m2malin.fr"
+
+
 def test_openai_handoff_marker_is_not_sent_to_client(monkeypatch):
     module = load_app(monkeypatch)
     sent = []
