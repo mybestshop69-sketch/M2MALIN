@@ -565,6 +565,46 @@ def test_force_on_answers_paused_conversation(monkeypatch):
         assert module.db.session.execute(text("select needs_human, bot_paused from messenger_conversations")).first() == (0, 0)
 
 
+def test_openai_failure_records_safe_diagnostic(monkeypatch):
+    module = load_app(monkeypatch)
+    sent = []
+    fake_openai(monkeypatch, error=RuntimeError("quota exceeded for sk-secret-value"))
+    fake_meta_send(monkeypatch, sent)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+
+    assert post_signed(client, payload(text="Pouvez-vous verifier mon dossier client ?")).status_code == 200
+    module.messenger_assistant["process_pending"]()
+
+    with module.app.app_context():
+        error = module.db.session.execute(text("select value from app_settings where key='messenger_last_openai_error'")).scalar()
+        assert "RuntimeError" in error
+        assert "sk-secret-value" not in error
+        assert "sk-<hidden>" in error
+        assert "OPENAI_API_KEY" not in error
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_last_openai_status'")).scalar() == "failed"
+
+
+def test_retry_human_required_button_uses_csrf(monkeypatch):
+    module = load_app(monkeypatch)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+
+    assert post_signed(client, payload(text="Question inconnue")).status_code == 200
+    with module.app.app_context():
+        module.db.session.execute(text("update messenger_messages set status='human_required', processed_at=CURRENT_TIMESTAMP"))
+        module.db.session.commit()
+
+    token = csrf_token(client)
+    response = client.post("/messenger/retry-human", headers=auth_headers(), data={"csrf_token": token})
+
+    assert response.status_code == 302
+    with module.app.app_context():
+        assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "pending"
+
+
 def test_dashboard_meta_configuration_check_valid(monkeypatch):
     monkeypatch.setenv("META_APP_ID", "1551714796659004")
     module = load_app(monkeypatch)

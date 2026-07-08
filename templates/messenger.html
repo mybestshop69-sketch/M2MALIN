@@ -100,6 +100,8 @@
     <article class="card"><h3>Dernier message traite</h3><p>{{ diagnostics.last_message_processed_at or "Jamais" }}</p></article>
     <article class="card"><h3>Dernier message envoye</h3><p>{{ diagnostics.last_message_sent_at or "Jamais" }}</p></article>
     <article class="card"><h3>Derniere synchro Meta</h3><p>{{ diagnostics.last_inbox_sync_at or "Jamais" }}</p></article>
+    <article class="card"><h3>Dernier statut OpenAI</h3><p>{{ diagnostics.last_openai_status or "Jamais" }}</p></article>
+    <article class="card"><h3>Derniere erreur OpenAI</h3><p>{{ diagnostics.last_openai_error or "Aucune" }}</p></article>
     <article class="card"><h3>Signatures refusees</h3><p>{{ diagnostics.invalid_signature_count }}</p></article>
   </div>
   <div class="grid cards">
@@ -111,6 +113,10 @@
   <form method="post" action="{{ url_for('reset_stuck_messenger_messages') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <button type="submit">Reinitialiser les messages bloques</button>
+  </form>
+  <form method="post" action="{{ url_for('retry_human_required_messages') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit">Relancer les messages en attente humaine</button>
   </form>
   <form method="post" action="{{ url_for('sync_messenger_inbox_now') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

@@ -307,6 +307,13 @@ def init_messenger_assistant(
         flash(f"{count} message(s) bloques remis en attente.", "success")
         return redirect(url_for("messenger_dashboard"))
 
+    @app.post("/messenger/retry-human")
+    def retry_human_required_messages():
+        count = _retry_human_required_messages()
+        db.session.commit()
+        flash(f"{count} message(s) en attente humaine remis en file.", "success")
+        return redirect(url_for("messenger_dashboard"))
+
     @app.post("/messenger/sync-inbox")
     def sync_messenger_inbox_now():
         try:
@@ -491,8 +498,12 @@ def init_messenger_assistant(
             reply_requires_human = False
             try:
                 reply = _openai_reply(conversation)
+                _set_setting("messenger_last_openai_status", "ok")
+                _set_setting("messenger_last_openai_error", "")
                 app.logger.warning("messenger.openai.completed")
             except Exception as exc:
+                _set_setting("messenger_last_openai_status", "failed")
+                _set_setting("messenger_last_openai_error", _safe_error_message(exc))
                 app.logger.warning("messenger.openai_failed type=%s", type(exc).__name__)
                 reply, reply_requires_human = _fallback_reply_for_content(message.content or "", _cached_site_knowledge())
                 if reply_requires_human:
@@ -745,6 +756,8 @@ def init_messenger_assistant(
             "last_message_processed_at": _get_setting("messenger_last_message_processed_at"),
             "last_message_sent_at": _get_setting("messenger_last_message_sent_at"),
             "last_inbox_sync_at": _get_setting("messenger_last_inbox_sync_at"),
+            "last_openai_status": _get_setting("messenger_last_openai_status"),
+            "last_openai_error": _get_setting("messenger_last_openai_error"),
             "last_header_signature_256_present": _get_setting("messenger_last_header_signature_256_present", "false"),
             "last_header_signature_sha1_present": _get_setting("messenger_last_header_signature_sha1_present", "false"),
             "last_header_content_type_present": _get_setting("messenger_last_header_content_type_present", "false"),
@@ -914,6 +927,24 @@ def init_messenger_assistant(
         if suppressed:
             app.logger.warning("messenger.safe_faq.suppressed count=%s", suppressed)
         return suppressed
+
+    def _retry_human_required_messages() -> int:
+        rows = db.session.scalars(
+            select(MessengerMessage)
+            .where(MessengerMessage.direction == "inbound", MessengerMessage.status == "human_required")
+            .order_by(MessengerMessage.created_at.desc())
+            .limit(20)
+        ).all()
+        count = 0
+        for row in rows:
+            row.status = "pending"
+            row.error_message = None
+            row.next_attempt_at = None
+            row.processed_at = None
+            count += 1
+        if count:
+            app.logger.warning("messenger.human_required.retried count=%s", count)
+        return count
 
     def _last_inbound_content(conversation_id: int) -> str:
         row = db.session.scalar(
@@ -1216,6 +1247,7 @@ def _delivery_policy_text(knowledge: dict[str, Any]) -> str:
 
 def _safe_error_message(exc: Exception) -> str:
     cleaned = re.sub(r"(access_token|app_secret|token|secret|password)=\\S+", r"\\1=<hidden>", str(exc), flags=re.I)
+    cleaned = re.sub(r"sk-[A-Za-z0-9_-]+", "sk-<hidden>", cleaned)
     cleaned = cleaned.replace("\n", " ").replace("\r", " ")
     prefix = type(exc).__name__
     return f"{prefix}: {cleaned[:240]}" if cleaned else prefix
