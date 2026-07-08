@@ -715,6 +715,26 @@ def test_openai_failure_location_question_gets_useful_fallback(monkeypatch):
         assert sent[0]["text"] == "M2 Malin est une boutique francaise basee a Aix-en-Provence. Vous pouvez decouvrir la boutique ici : https://m2malin.fr"
 
 
+def test_paused_conversation_still_answers_safe_faq(monkeypatch):
+    module = load_app(monkeypatch)
+    sent = []
+    fake_openai(monkeypatch, error=RuntimeError("openai down"))
+    fake_meta_send(monkeypatch, sent)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+
+    assert post_signed(client, payload(mid="mid-1", text="Question inconnue")).status_code == 200
+    module.messenger_assistant["process_pending"]()
+    assert post_signed(client, payload(mid="mid-2", text="Ou vous trouvez-vous ?")).status_code == 200
+    module.messenger_assistant["process_pending"]()
+
+    with module.app.app_context():
+        rows = module.db.session.execute(text("select status from messenger_messages where direction='inbound' order by id")).all()
+        assert [row[0] for row in rows] == ["human_required", "completed"]
+        assert sent[-1]["text"] == "M2 Malin est une boutique francaise basee a Aix-en-Provence. Vous pouvez decouvrir la boutique ici : https://m2malin.fr"
+
+
 def test_openai_handoff_marker_is_not_sent_to_client(monkeypatch):
     module = load_app(monkeypatch)
     sent = []

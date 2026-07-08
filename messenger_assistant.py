@@ -374,7 +374,9 @@ def init_messenger_assistant(
             conversation.last_message_at = now
             conversation.updated_at = now
         message_type, content = _message_content(message, postback)
-        status = "human_required" if conversation.needs_human or conversation.bot_paused else "pending"
+        status = "pending"
+        if conversation.needs_human or conversation.bot_paused:
+            status = "pending" if _can_answer_with_safe_fallback(content) else "human_required"
         db.session.add(MessengerMessage(conversation_id=conversation.id, meta_message_id=meta_message_id, direction="inbound", message_type=message_type, content=content, status=status))
         app.logger.warning("messenger.message.queued type=%s", message_type)
         return 1
@@ -424,6 +426,17 @@ def init_messenger_assistant(
                 message.processed_at = datetime.utcnow()
                 return
             if conversation.needs_human or conversation.bot_paused:
+                paused_reply, paused_reply_requires_human = _fallback_reply_for_content(
+                    message.content or "",
+                    _cached_site_knowledge(),
+                    include_generic=False,
+                )
+                if paused_reply and not paused_reply_requires_human:
+                    _send_reply(conversation, paused_reply)
+                    message.status = "completed"
+                    message.processed_at = datetime.utcnow()
+                    _set_setting("messenger_last_message_processed_at", message.processed_at.isoformat())
+                    return
                 message.status = "human_required"
                 message.processed_at = datetime.utcnow()
                 return
@@ -955,7 +968,11 @@ def _ensure_delivery_answer(content: str, reply: str, knowledge: dict[str, Any] 
     return DELIVERY_FALLBACK_MESSAGE
 
 
-def _fallback_reply_for_content(content: str, knowledge: dict[str, Any] | None = None) -> tuple[str, bool]:
+def _fallback_reply_for_content(
+    content: str,
+    knowledge: dict[str, Any] | None = None,
+    include_generic: bool = True,
+) -> tuple[str, bool]:
     if _is_delivery_question(content):
         return _ensure_delivery_answer(content, "", knowledge or {}), False
     if _is_location_question(content):
@@ -964,7 +981,18 @@ def _fallback_reply_for_content(content: str, knowledge: dict[str, Any] | None =
         return HOURS_FALLBACK_MESSAGE, False
     if _is_website_question(content):
         return WEBSITE_FALLBACK_MESSAGE, False
+    if not include_generic:
+        return "", True
     return OPENAI_FALLBACK, True
+
+
+def _can_answer_with_safe_fallback(content: str) -> bool:
+    return (
+        _is_delivery_question(content)
+        or _is_location_question(content)
+        or _is_hours_question(content)
+        or _is_website_question(content)
+    )
 
 
 def _is_delivery_question(content: str) -> bool:
