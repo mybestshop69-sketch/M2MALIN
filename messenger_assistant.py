@@ -558,9 +558,7 @@ def init_messenger_assistant(
         instructions = _system_prompt(_cached_site_knowledge())
         client = OpenAI(api_key=api_key, timeout=15.0)
         fallback_model = os.getenv("OPENAI_FALLBACK_MODEL", "gpt-4.1-mini").strip()
-        models = [primary_model.strip()]
-        if fallback_model and fallback_model not in models:
-            models.append(fallback_model)
+        models = _openai_models_to_try(primary_model.strip(), fallback_model)
         last_exc: Exception | None = None
 
         for index, model in enumerate(models):
@@ -1206,6 +1204,17 @@ def _should_retry_openai_with_fallback(exc: Exception) -> bool:
         or ("model" in message and "notfound" in message)
         or ("model" in message and "not found" in message)
     )
+
+
+def _openai_models_to_try(primary_model: str, fallback_model: str) -> list[str]:
+    primary = (primary_model or "").strip()
+    fallback = (fallback_model or "").strip()
+    if primary.replace("-", "").replace(".", "").lower().startswith("gpt5") and fallback:
+        return [fallback]
+    models = [primary] if primary else []
+    if fallback and fallback not in models:
+        models.append(fallback)
+    return models
 
 
 def _clean_openai_reply(reply: str) -> tuple[str, bool]:
