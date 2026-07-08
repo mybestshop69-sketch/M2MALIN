@@ -387,6 +387,7 @@ def init_messenger_assistant(
         with app.app_context():
             try:
                 reset_stuck_processing()
+                recover_safe_faq_messages()
                 message = db.session.scalar(
                     select(MessengerMessage)
                     .where(
@@ -798,6 +799,25 @@ def init_messenger_assistant(
             row.error_message = "Processing bloque remis en attente"
             row.next_attempt_at = None
         return len(rows)
+
+    def recover_safe_faq_messages() -> int:
+        rows = db.session.scalars(
+            select(MessengerMessage).where(
+                MessengerMessage.direction == "inbound",
+                MessengerMessage.status == "human_required",
+                MessengerMessage.processed_at.is_(None),
+            )
+        ).all()
+        recovered = 0
+        for row in rows:
+            if _can_answer_with_safe_fallback(row.content or ""):
+                row.status = "pending"
+                row.error_message = None
+                row.next_attempt_at = None
+                recovered += 1
+        if recovered:
+            app.logger.warning("messenger.safe_faq.recovered count=%s", recovered)
+        return recovered
 
     def _last_inbound_content(conversation_id: int) -> str:
         row = db.session.scalar(
