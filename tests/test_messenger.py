@@ -888,10 +888,16 @@ def test_system_prompt_contains_official_advisor_rules(monkeypatch):
     prompt = module.messenger_assistant["system_prompt"]({"site": "https://m2malin.fr", "products": [], "policies": []})
 
     assert "conseiller officiel de M2 Malin" in prompt
+    assert "assistant officiel de M2Malin" in prompt
+    assert "boutique Shopify synchronisee" in prompt
+    assert "site https://m2malin.fr" in prompt
+    assert "version la plus recente disponible dans le cache" in prompt
     assert "Reponds toujours dans la langue utilisee par le client" in prompt
     assert "N'invente jamais une information" in prompt
     assert "Je ne dispose pas de cette information" in prompt
     assert "devis, une commande ou un suivi" in prompt
+    assert "code promo" in prompt
+    assert "quel produit choisir" in prompt
 
 
 def test_autonomous_business_questions_get_immediate_local_replies(monkeypatch):
@@ -1559,7 +1565,14 @@ def test_policy_fetch_and_cache(monkeypatch):
         text = "<html><body><script>secret()</script><p>Retour sous conditions.</p></body></html>"
 
         def json(self):
-            return {"products": []}
+            return {
+                "products": [
+                    {"title": "Produit test", "handle": "produit-test", "variants": [{"price": "12.00", "title": "Default", "available": True}]}
+                ],
+                "collections": [{"title": "Maison", "handle": "maison", "body_html": "<p>Collection maison</p>"}],
+                "pages": [{"title": "FAQ", "handle": "faq", "body_html": "<p>Questions frequentes</p>"}],
+                "blogs": [{"title": "Guides", "handle": "guides", "body_html": "<p>Guides utiles</p>"}],
+            }
 
     def fake_get(url, **kwargs):
         calls.append(url)
@@ -1570,8 +1583,12 @@ def test_policy_fetch_and_cache(monkeypatch):
         knowledge_1 = module.messenger_assistant["site_knowledge"]()
         knowledge_2 = module.messenger_assistant["site_knowledge"]()
 
-    assert len(calls) == 6
+    assert len(calls) == 9
     assert knowledge_1 == knowledge_2
+    assert knowledge_1["products"][0]["name"] == "Produit test"
+    assert knowledge_1["collections"][0]["title"] == "Maison"
+    assert knowledge_1["pages"][0]["title"] == "FAQ"
+    assert knowledge_1["blogs"][0]["title"] == "Guides"
     assert len(knowledge_1["policies"]) == 5
     assert "script" not in knowledge_1["policies"][0]["text"].lower()
 
