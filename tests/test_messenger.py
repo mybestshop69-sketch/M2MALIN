@@ -262,7 +262,7 @@ def test_inbox_sync_queues_graph_message_without_raw_psid(monkeypatch):
                     "data": [
                         {
                             "id": "graph-mid-1",
-                            "message": "Bonjour, quels sont vos delais de livraison ?",
+                            "message": "Pouvez-vous me proposer un article utile ?",
                             "created_time": "2026-07-08T06:50:00+0000",
                             "from": {"id": "user-1", "name": "Client"},
                         }
@@ -279,7 +279,7 @@ def test_inbox_sync_queues_graph_message_without_raw_psid(monkeypatch):
     with module.app.app_context():
         event_payload = module.db.session.execute(text("select payload from messenger_events")).scalar()
         message = module.db.session.execute(text("select content from messenger_messages")).scalar()
-        assert message == "Bonjour, quels sont vos delais de livraison ?"
+        assert message == "Pouvez-vous me proposer un article utile ?"
         assert "user-1" not in event_payload
         data = json.loads(event_payload)
         assert set(data) == {"page_id", "sender_hash", "message_id", "message_type", "timestamp", "has_attachment", "status"}
@@ -342,7 +342,7 @@ def test_inbox_sync_then_process_sends_reply(monkeypatch):
                     "data": [
                         {
                             "id": "graph-mid-4",
-                            "message": "Bonjour, quels sont vos delais de livraison ?",
+                            "message": "Pouvez-vous me proposer un article utile ?",
                             "from": {"id": "user-1"},
                         }
                     ]
@@ -350,7 +350,7 @@ def test_inbox_sync_then_process_sends_reply(monkeypatch):
             }
         ],
     )
-    fake_openai(monkeypatch, output_text="Livraison suivie en France sous 5 a 8 jours ouvres.")
+    fake_openai(monkeypatch, output_text="Voici une suggestion adaptee a votre besoin.")
     fake_meta_send(monkeypatch, sent)
     with module.app.app_context():
         add_meta_connection(module)
@@ -358,7 +358,7 @@ def test_inbox_sync_then_process_sends_reply(monkeypatch):
     assert module.messenger_assistant["sync_messenger_inbox"]() == 1
     module.messenger_assistant["process_pending"]()
 
-    assert sent == [{"page_id": "page-1", "psid": "user-1", "text": "Livraison suivie en France sous 5 a 8 jours ouvres."}]
+    assert sent == [{"page_id": "page-1", "psid": "user-1", "text": "Voici une suggestion adaptee a votre besoin."}]
 
 
 def test_two_users_same_postback_create_distinct_events(monkeypatch):
@@ -675,6 +675,40 @@ def test_location_question_gets_immediate_webhook_reply(monkeypatch):
         assert sent[0]["text"] == "M2 Malin est une boutique francaise basee a Aix-en-Provence. Vous pouvez decouvrir la boutique ici : https://m2malin.fr"
         assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
         assert module.db.session.execute(text("select value from app_settings where key='messenger_last_openai_model'")).scalar() == "reponse_locale"
+
+
+def test_common_faq_questions_get_immediate_webhook_replies(monkeypatch):
+    cases = [
+        (
+            "Quels sont vos delais de livraison ?",
+            "Les delais de livraison peuvent varier selon le produit. Ils sont indiques sur la fiche du produit et lors de la validation de la commande. Envoyez-moi le nom ou le lien du produit concerne afin que je verifie le delai correspondant.",
+        ),
+        (
+            "Quels sont vos horaires ?",
+            "Nous vous repondons du lundi au vendredi, de 9 h a 18 h. Vous pouvez aussi consulter la boutique ici : https://m2malin.fr",
+        ),
+        (
+            "Quel est votre site internet ?",
+            "Voici le site officiel M2 Malin : https://m2malin.fr",
+        ),
+    ]
+    for question, expected in cases:
+        module = load_app(monkeypatch)
+        sent = []
+        fake_meta_send(monkeypatch, sent)
+        client = module.app.test_client()
+        with module.app.app_context():
+            add_meta_connection(module)
+            module.db.session.execute(text("insert into app_settings(key, value, updated_at) values('messenger_auto_reply_mode', 'force_on', CURRENT_TIMESTAMP)"))
+            module.db.session.commit()
+
+        response = post_signed(client, payload(text=question))
+
+        assert response.status_code == 200
+        with module.app.app_context():
+            assert sent[0]["text"] == expected
+            assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
+            assert module.db.session.execute(text("select value from app_settings where key='messenger_last_openai_model'")).scalar() == "reponse_locale"
 
 
 def test_gpt5_mini_configuration_uses_compatible_model_first(monkeypatch):
@@ -1200,11 +1234,13 @@ def test_worker_recovers_safe_faq_already_marked_human_required(monkeypatch):
         module.db.session.execute(text("update messenger_messages set status='human_required', processed_at=null"))
         module.db.session.execute(text("update messenger_conversations set needs_human=1, bot_paused=1"))
         module.db.session.commit()
+    sent_count_before_retry = len(sent)
     module.messenger_assistant["process_pending"]()
 
     with module.app.app_context():
         assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
-        assert sent[0]["text"] == "Nous vous repondons du lundi au vendredi, de 9 h a 18 h. Vous pouvez aussi consulter la boutique ici : https://m2malin.fr"
+        assert len(sent) == sent_count_before_retry + 1
+        assert sent[-1]["text"] == "Nous vous repondons du lundi au vendredi, de 9 h a 18 h. Vous pouvez aussi consulter la boutique ici : https://m2malin.fr"
 
 
 def test_worker_recovers_greeting_already_marked_human_required(monkeypatch):
@@ -1221,6 +1257,7 @@ def test_worker_recovers_greeting_already_marked_human_required(monkeypatch):
         module.db.session.execute(text("update messenger_messages set status='human_required', processed_at=null"))
         module.db.session.execute(text("update messenger_conversations set needs_human=1, bot_paused=1"))
         module.db.session.commit()
+    sent_count_before_retry = len(sent)
     module.messenger_assistant["process_pending"]()
 
     with module.app.app_context():
@@ -1243,6 +1280,7 @@ def test_worker_recovers_only_latest_safe_faq_per_conversation(monkeypatch):
         module.db.session.execute(text("update messenger_messages set status='human_required', processed_at=null"))
         module.db.session.execute(text("update messenger_conversations set needs_human=1, bot_paused=1"))
         module.db.session.commit()
+    sent_count_before_retry = len(sent)
     module.messenger_assistant["process_pending"]()
 
     with module.app.app_context():
@@ -1250,8 +1288,8 @@ def test_worker_recovers_only_latest_safe_faq_per_conversation(monkeypatch):
             text("select meta_message_id, status from messenger_messages where direction='inbound' order by id")
         ).all()
         assert rows == [("mid-old", "completed"), ("mid-new", "completed")]
-        assert len(sent) == 1
-        assert sent[0]["text"] == "Nous vous repondons du lundi au vendredi, de 9 h a 18 h. Vous pouvez aussi consulter la boutique ici : https://m2malin.fr"
+        assert len(sent) == sent_count_before_retry + 1
+        assert sent[-1]["text"] == "Nous vous repondons du lundi au vendredi, de 9 h a 18 h. Vous pouvez aussi consulter la boutique ici : https://m2malin.fr"
 
 
 def test_openai_handoff_marker_is_not_sent_to_client(monkeypatch):

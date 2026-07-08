@@ -519,7 +519,7 @@ def init_messenger_assistant(
                 message.status = "human_required"
                 message.processed_at = datetime.utcnow()
                 return
-            local_reply = _immediate_local_reply_for_content(message.content or "")
+            local_reply = _immediate_local_reply_for_content(message.content or "", _cached_site_knowledge())
             if local_reply:
                 _send_reply(conversation, local_reply)
                 conversation.needs_human = False
@@ -1047,7 +1047,7 @@ def init_messenger_assistant(
         ).all()
         count = 0
         for row in rows:
-            reply = _immediate_local_reply_for_content(row.content or "")
+            reply = _immediate_local_reply_for_content(row.content or "", _cached_site_knowledge())
             if not reply:
                 continue
             conversation = db.session.get(MessengerConversation, row.conversation_id)
@@ -1365,11 +1365,17 @@ def _fallback_reply_for_content(
     return OPENAI_FALLBACK, True
 
 
-def _immediate_local_reply_for_content(content: str) -> str:
+def _immediate_local_reply_for_content(content: str, knowledge: dict[str, Any] | None = None) -> str:
     if _is_greeting(content):
         return GREETING_FALLBACK_MESSAGE
+    if _is_delivery_question(content):
+        return _ensure_delivery_answer(content, "", knowledge or {})
     if _is_location_question(content):
         return LOCATION_FALLBACK_MESSAGE
+    if _is_hours_question(content):
+        return HOURS_FALLBACK_MESSAGE
+    if _is_website_question(content):
+        return WEBSITE_FALLBACK_MESSAGE
     if _is_product_question(content):
         return PRODUCT_FALLBACK_MESSAGE
     return ""
