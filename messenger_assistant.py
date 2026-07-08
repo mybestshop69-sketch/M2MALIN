@@ -1333,6 +1333,7 @@ def _needs_human(content: str) -> bool:
 
 
 def _normalize_text(content: str) -> str:
+    content = re.sub(r"['’`´]", " ", content)
     normalized = unicodedata.normalize("NFKD", content).encode("ascii", "ignore").decode("ascii")
     return " ".join(normalized.lower().split())
 

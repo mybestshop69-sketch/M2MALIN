@@ -747,6 +747,10 @@ def test_common_faq_questions_get_immediate_webhook_replies(monkeypatch):
             "Les produits proposes par M2 Malin sont selectionnes pour leur utilite au quotidien, notamment pour la maison, le rangement et les petits espaces. L'origine exacte peut varier selon l'article. Pour une information precise, envoyez-moi le nom ou le lien du produit concerne et je verifierai les informations disponibles.",
         ),
         (
+            "D\u2019ou viennent les produits ?",
+            "Les produits proposes par M2 Malin sont selectionnes pour leur utilite au quotidien, notamment pour la maison, le rangement et les petits espaces. L'origine exacte peut varier selon l'article. Pour une information precise, envoyez-moi le nom ou le lien du produit concerne et je verifierai les informations disponibles.",
+        ),
+        (
             "avez-vous un numero de telephone",
             "Je n'ai pas de numero de telephone public verifie a communiquer. Vous pouvez nous ecrire ici sur Messenger ou passer par le site officiel M2 Malin : https://m2malin.fr",
         ),
