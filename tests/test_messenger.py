@@ -863,6 +863,37 @@ def test_openai_single_word_yes_is_replaced_by_complete_reply(monkeypatch):
         assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
 
 
+def test_openai_missing_information_message_is_standardized(monkeypatch):
+    module = load_app(monkeypatch)
+    sent = []
+    fake_openai(monkeypatch, output_text="Je ne dispose pas de cette information. Je vous invite a contacter notre equipe afin d'obtenir une reponse precise.")
+    fake_meta_send(monkeypatch, sent)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+        module.db.session.execute(text("insert into app_settings(key, value, updated_at) values('messenger_auto_reply_mode', 'force_on', CURRENT_TIMESTAMP)"))
+        module.db.session.commit()
+
+    assert post_signed(client, payload(text="Quelle est votre equipe dirigeante ?")).status_code == 200
+    module.messenger_assistant["process_pending"]()
+
+    with module.app.app_context():
+        assert sent[0]["text"] == "Je ne dispose pas de cette information. Je vous invite a contacter notre equipe afin d'obtenir une reponse precise."
+        assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
+
+
+def test_system_prompt_contains_official_advisor_rules(monkeypatch):
+    module = load_app(monkeypatch)
+
+    prompt = module.messenger_assistant["system_prompt"]({"site": "https://m2malin.fr", "products": [], "policies": []})
+
+    assert "conseiller officiel de M2 Malin" in prompt
+    assert "Reponds toujours dans la langue utilisee par le client" in prompt
+    assert "N'invente jamais une information" in prompt
+    assert "Je ne dispose pas de cette information" in prompt
+    assert "devis, une commande ou un suivi" in prompt
+
+
 def test_autonomous_business_questions_get_immediate_local_replies(monkeypatch):
     cases = [
         (
