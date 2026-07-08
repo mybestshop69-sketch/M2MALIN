@@ -617,7 +617,7 @@ def test_auto_disabled_does_not_send(monkeypatch):
     module = load_app(monkeypatch)
     client = module.app.test_client()
 
-    assert post_signed(client, payload()).status_code == 200
+    assert post_signed(client, payload(text="Pouvez-vous verifier mon dossier client ?")).status_code == 200
     module.messenger_assistant["process_pending"]()
     with module.app.app_context():
         outbound = module.db.session.execute(text("select count(*) from messenger_messages where direction='outbound'")).scalar()
@@ -652,7 +652,7 @@ def test_openai_normal_response_and_meta_send(monkeypatch):
     with module.app.app_context():
         add_meta_connection(module)
 
-    assert post_signed(client, payload()).status_code == 200
+    assert post_signed(client, payload(text="Pouvez-vous verifier mon dossier client ?")).status_code == 200
     module.messenger_assistant["process_pending"]()
 
     with module.app.app_context():
@@ -670,7 +670,7 @@ def test_openai_failure_sends_fallback(monkeypatch):
     with module.app.app_context():
         add_meta_connection(module)
 
-    assert post_signed(client, payload()).status_code == 200
+    assert post_signed(client, payload(text="Pouvez-vous verifier mon dossier client ?")).status_code == 200
     module.messenger_assistant["process_pending"]()
 
     with module.app.app_context():
@@ -715,6 +715,23 @@ def test_openai_failure_location_question_gets_useful_fallback(monkeypatch):
         assert sent[0]["text"] == "M2 Malin est une boutique francaise basee a Aix-en-Provence. Vous pouvez decouvrir la boutique ici : https://m2malin.fr"
 
 
+def test_openai_failure_greeting_gets_useful_fallback(monkeypatch):
+    module = load_app(monkeypatch)
+    sent = []
+    fake_openai(monkeypatch, error=RuntimeError("openai down"))
+    fake_meta_send(monkeypatch, sent)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+
+    assert post_signed(client, payload(text="bonjour")).status_code == 200
+    module.messenger_assistant["process_pending"]()
+
+    with module.app.app_context():
+        assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
+        assert sent[0]["text"] == "Bonjour. Merci d'avoir contacte M2 Malin. Comment puis-je vous aider aujourd'hui ? Vous pouvez me poser une question sur un produit, la livraison, une commande ou un retour."
+
+
 def test_paused_conversation_still_answers_safe_faq(monkeypatch):
     module = load_app(monkeypatch)
     sent = []
@@ -733,6 +750,26 @@ def test_paused_conversation_still_answers_safe_faq(monkeypatch):
         rows = module.db.session.execute(text("select status from messenger_messages where direction='inbound' order by id")).all()
         assert [row[0] for row in rows] == ["human_required", "completed"]
         assert sent[-1]["text"] == "M2 Malin est une boutique francaise basee a Aix-en-Provence. Vous pouvez decouvrir la boutique ici : https://m2malin.fr"
+
+
+def test_paused_conversation_still_answers_greeting(monkeypatch):
+    module = load_app(monkeypatch)
+    sent = []
+    fake_openai(monkeypatch, error=RuntimeError("openai down"))
+    fake_meta_send(monkeypatch, sent)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+
+    assert post_signed(client, payload(mid="mid-1", text="Question inconnue")).status_code == 200
+    module.messenger_assistant["process_pending"]()
+    assert post_signed(client, payload(mid="mid-2", text="salut")).status_code == 200
+    module.messenger_assistant["process_pending"]()
+
+    with module.app.app_context():
+        rows = module.db.session.execute(text("select status from messenger_messages where direction='inbound' order by id")).all()
+        assert [row[0] for row in rows] == ["human_required", "completed"]
+        assert sent[-1]["text"] == "Bonjour. Merci d'avoir contacte M2 Malin. Comment puis-je vous aider aujourd'hui ? Vous pouvez me poser une question sur un produit, la livraison, une commande ou un retour."
 
 
 def test_worker_recovers_safe_faq_already_marked_human_required(monkeypatch):
@@ -754,6 +791,27 @@ def test_worker_recovers_safe_faq_already_marked_human_required(monkeypatch):
     with module.app.app_context():
         assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
         assert sent[0]["text"] == "M2 Malin est une boutique francaise basee a Aix-en-Provence. Vous pouvez decouvrir la boutique ici : https://m2malin.fr"
+
+
+def test_worker_recovers_greeting_already_marked_human_required(monkeypatch):
+    module = load_app(monkeypatch)
+    sent = []
+    fake_openai(monkeypatch, error=RuntimeError("openai down"))
+    fake_meta_send(monkeypatch, sent)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+
+    assert post_signed(client, payload(text="bonjour")).status_code == 200
+    with module.app.app_context():
+        module.db.session.execute(text("update messenger_messages set status='human_required', processed_at=null"))
+        module.db.session.execute(text("update messenger_conversations set needs_human=1, bot_paused=1"))
+        module.db.session.commit()
+    module.messenger_assistant["process_pending"]()
+
+    with module.app.app_context():
+        assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
+        assert sent[0]["text"] == "Bonjour. Merci d'avoir contacte M2 Malin. Comment puis-je vous aider aujourd'hui ? Vous pouvez me poser une question sur un produit, la livraison, une commande ou un retour."
 
 
 def test_worker_recovers_only_latest_safe_faq_per_conversation(monkeypatch):
@@ -792,7 +850,7 @@ def test_openai_handoff_marker_is_not_sent_to_client(monkeypatch):
     with module.app.app_context():
         add_meta_connection(module)
 
-    assert post_signed(client, payload()).status_code == 200
+    assert post_signed(client, payload(text="Pouvez-vous verifier mon dossier client ?")).status_code == 200
     module.messenger_assistant["process_pending"]()
 
     with module.app.app_context():
@@ -839,7 +897,7 @@ def test_retry_after_failed_message(monkeypatch):
     with module.app.app_context():
         add_meta_connection(module)
 
-    assert post_signed(client, payload()).status_code == 200
+    assert post_signed(client, payload(text="Pouvez-vous verifier mon dossier client ?")).status_code == 200
     for _ in range(3):
         with module.app.app_context():
             module.db.session.execute(text("update messenger_messages set next_attempt_at = null"))
@@ -913,7 +971,7 @@ def test_openai_timeout_is_controlled_and_sends_fallback(monkeypatch):
     with module.app.app_context():
         add_meta_connection(module)
 
-    assert post_signed(client, payload()).status_code == 200
+    assert post_signed(client, payload(text="Pouvez-vous verifier mon dossier client ?")).status_code == 200
     module.messenger_assistant["process_pending"]()
 
     with module.app.app_context():

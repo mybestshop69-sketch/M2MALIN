@@ -39,6 +39,7 @@ DELIVERY_FALLBACK_MESSAGE = "Les delais de livraison peuvent varier selon le pro
 LOCATION_FALLBACK_MESSAGE = "M2 Malin est une boutique francaise basee a Aix-en-Provence. Vous pouvez decouvrir la boutique ici : https://m2malin.fr"
 HOURS_FALLBACK_MESSAGE = "Nous vous repondons du lundi au vendredi, de 9 h a 18 h. Vous pouvez aussi consulter la boutique ici : https://m2malin.fr"
 WEBSITE_FALLBACK_MESSAGE = "Voici le site officiel M2 Malin : https://m2malin.fr"
+GREETING_FALLBACK_MESSAGE = "Bonjour. Merci d'avoir contacte M2 Malin. Comment puis-je vous aider aujourd'hui ? Vous pouvez me poser une question sur un produit, la livraison, une commande ou un retour."
 EXPECTED_META_APP_ID = "1551714796659004"
 EXPECTED_META_PAGE_ID = "1163222070213376"
 REQUIRED_META_SCOPES = {
@@ -1026,6 +1027,8 @@ def _fallback_reply_for_content(
     knowledge: dict[str, Any] | None = None,
     include_generic: bool = True,
 ) -> tuple[str, bool]:
+    if _is_greeting(content):
+        return GREETING_FALLBACK_MESSAGE, False
     if _is_delivery_question(content):
         return _ensure_delivery_answer(content, "", knowledge or {}), False
     if _is_location_question(content):
@@ -1041,11 +1044,19 @@ def _fallback_reply_for_content(
 
 def _can_answer_with_safe_fallback(content: str) -> bool:
     return (
-        _is_delivery_question(content)
+        _is_greeting(content)
+        or _is_delivery_question(content)
         or _is_location_question(content)
         or _is_hours_question(content)
         or _is_website_question(content)
     )
+
+
+def _is_greeting(content: str) -> bool:
+    normalized = _normalize_text(content)
+    compact = re.sub(r"[^a-z0-9 ]+", " ", normalized)
+    words = compact.split()
+    return 0 < len(words) <= 3 and any(word in {"bonjour", "salut", "hello", "bonsoir", "coucou", "bjr", "slt"} for word in words)
 
 
 def _is_delivery_question(content: str) -> bool:
