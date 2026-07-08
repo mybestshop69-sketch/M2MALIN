@@ -723,7 +723,15 @@ def test_location_question_gets_immediate_webhook_reply(monkeypatch):
 def test_common_faq_questions_get_immediate_webhook_replies(monkeypatch):
     cases = [
         (
-            "Quels sont vos delais de livraison ?",
+            "Où se trouve votre boutique ?",
+            "M2 Malin est une boutique francaise basee a Aix-en-Provence. Vous pouvez decouvrir la boutique ici : https://m2malin.fr",
+        ),
+        (
+            "Puis-je acheter directement sur votre site ?",
+            "Oui, vous pouvez acheter directement sur le site officiel M2 Malin : https://m2malin.fr. Les produits, prix et disponibilites a jour sont affiches sur la boutique au moment de la commande.",
+        ),
+        (
+            "Quels sont les délais de livraison ?",
             "Les delais de livraison peuvent varier selon le produit. Ils sont indiques sur la fiche du produit et lors de la validation de la commande. Envoyez-moi le nom ou le lien du produit concerne afin que je verifie le delai correspondant.",
         ),
         (
@@ -756,6 +764,26 @@ def test_common_faq_questions_get_immediate_webhook_replies(monkeypatch):
             assert sent[0]["text"] == expected
             assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
             assert module.db.session.execute(text("select value from app_settings where key='messenger_last_openai_model'")).scalar() == "reponse_locale"
+
+
+def test_openai_single_word_yes_is_replaced_by_complete_reply(monkeypatch):
+    module = load_app(monkeypatch)
+    sent = []
+    fake_openai(monkeypatch, output_text="Oui")
+    fake_meta_send(monkeypatch, sent)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+        module.db.session.execute(text("insert into app_settings(key, value, updated_at) values('messenger_auto_reply_mode', 'force_on', CURRENT_TIMESTAMP)"))
+        module.db.session.commit()
+
+    assert post_signed(client, payload(text="Pouvez-vous analyser ma demande detaillee ?")).status_code == 200
+    module.messenger_assistant["process_pending"]()
+
+    with module.app.app_context():
+        assert sent[0]["text"] == "Je vous aide avec plaisir. Pouvez-vous me donner un peu plus de details sur votre demande afin que je vous reponde correctement ?"
+        assert sent[0]["text"].lower() != "oui"
+        assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
 
 
 def test_gpt5_mini_configuration_uses_compatible_model_first(monkeypatch):

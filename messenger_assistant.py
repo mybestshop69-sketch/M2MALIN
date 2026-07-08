@@ -38,11 +38,14 @@ HUMAN_REQUIRED_MARKER = "[HUMAN_REQUIRED]"
 PROCESSING_TIMEOUT_SECONDS = 45
 DELIVERY_FALLBACK_MESSAGE = "Les delais de livraison peuvent varier selon le produit. Ils sont indiques sur la fiche du produit et lors de la validation de la commande. Envoyez-moi le nom ou le lien du produit concerne afin que je verifie le delai correspondant."
 LOCATION_FALLBACK_MESSAGE = "M2 Malin est une boutique francaise basee a Aix-en-Provence. Vous pouvez decouvrir la boutique ici : https://m2malin.fr"
+PURCHASE_FALLBACK_MESSAGE = "Oui, vous pouvez acheter directement sur le site officiel M2 Malin : https://m2malin.fr. Les produits, prix et disponibilites a jour sont affiches sur la boutique au moment de la commande."
 HOURS_FALLBACK_MESSAGE = "Nous vous repondons du lundi au vendredi, de 9 h a 18 h. Vous pouvez aussi consulter la boutique ici : https://m2malin.fr"
 WEBSITE_FALLBACK_MESSAGE = "Voici le site officiel M2 Malin : https://m2malin.fr"
 GREETING_FALLBACK_MESSAGE = "Bonjour. Merci d'avoir contacte M2 Malin. Comment puis-je vous aider aujourd'hui ? Vous pouvez me poser une question sur un produit, la livraison, une commande ou un retour."
 PRODUCT_FALLBACK_MESSAGE = "M2 Malin vend les produits affiches sur sa boutique officielle. Pour voir le catalogue et les prix a jour, consultez : https://m2malin.fr"
 CONTACT_FALLBACK_MESSAGE = "Je n'ai pas de numero de telephone public verifie a communiquer. Vous pouvez nous ecrire ici sur Messenger ou passer par le site officiel M2 Malin : https://m2malin.fr"
+GENERIC_CLARIFICATION_MESSAGE = "Je vous aide avec plaisir. Pouvez-vous me donner un peu plus de details sur votre demande afin que je vous reponde correctement ?"
+INVALID_STANDALONE_REPLIES = {"oui", "non", "peut etre", "d accord", "ok"}
 EXPECTED_META_APP_ID = "1551714796659004"
 EXPECTED_META_PAGE_ID = "1163222070213376"
 REQUIRED_META_SCOPES = {
@@ -522,6 +525,7 @@ def init_messenger_assistant(
                 return
             local_reply = _immediate_local_reply_for_content(message.content or "", _cached_site_knowledge())
             if local_reply:
+                local_reply = _finalize_reply(message.content or "", local_reply, _cached_site_knowledge())
                 _send_reply(conversation, local_reply)
                 conversation.needs_human = False
                 conversation.bot_paused = False
@@ -555,6 +559,7 @@ def init_messenger_assistant(
                     conversation.bot_paused = True
             reply = _ensure_delivery_answer(message.content or "", reply, _cached_site_knowledge())
             reply, openai_requires_human = _clean_openai_reply(reply)
+            reply = _finalize_reply(message.content or "", reply, _cached_site_knowledge())
             _send_reply(conversation, reply)
             if openai_requires_human or reply_requires_human:
                 conversation.needs_human = True
@@ -626,6 +631,7 @@ def init_messenger_assistant(
         meta_connection = db.session.scalar(select(connection_model).where(connection_model.platform == "meta"))
         if not meta_connection:
             raise RuntimeError("Meta non connecte")
+        text = _safe_outbound_text(text)
         psid = decrypt_secret(conversation.sender_id_encrypted)
         token = decrypt_secret(meta_connection.access_token_encrypted)
         responses = MetaClient(os.getenv("META_GRAPH_VERSION", "v23.0"), token).send_text_message(meta_connection.page_id or "", psid, text)
@@ -1062,6 +1068,7 @@ def init_messenger_assistant(
             reply = _immediate_local_reply_for_content(row.content or "", _cached_site_knowledge())
             if not reply:
                 continue
+            reply = _finalize_reply(row.content or "", reply, _cached_site_knowledge())
             conversation = db.session.get(MessengerConversation, row.conversation_id)
             if not conversation:
                 continue
@@ -1313,6 +1320,12 @@ def _normalize_text(content: str) -> str:
     return " ".join(normalized.lower().split())
 
 
+def _compact_intent_text(content: str) -> str:
+    normalized = _normalize_text(content)
+    normalized = re.sub(r"[^a-z0-9 ]+", " ", normalized)
+    return " ".join(normalized.split())
+
+
 def _should_retry_openai_with_fallback(exc: Exception) -> bool:
     message = _normalize_text(str(exc))
     return (
@@ -1344,6 +1357,28 @@ def _clean_openai_reply(reply: str) -> tuple[str, bool]:
     return cleaned or HUMAN_VERIFY_MESSAGE, requires_human
 
 
+def _safe_outbound_text(reply: str) -> str:
+    cleaned = (reply or "").strip()
+    if _is_invalid_standalone_reply(cleaned):
+        return GENERIC_CLARIFICATION_MESSAGE
+    return cleaned
+
+
+def _finalize_reply(content: str, reply: str, knowledge: dict[str, Any] | None = None) -> str:
+    cleaned = (reply or "").strip()
+    if cleaned and not _is_invalid_standalone_reply(cleaned):
+        return cleaned
+    deterministic_reply = _immediate_local_reply_for_content(content, knowledge or {})
+    if deterministic_reply and not _is_invalid_standalone_reply(deterministic_reply):
+        return deterministic_reply
+    return GENERIC_CLARIFICATION_MESSAGE
+
+
+def _is_invalid_standalone_reply(reply: str) -> bool:
+    normalized = _compact_intent_text(reply)
+    return not normalized or normalized in INVALID_STANDALONE_REPLIES
+
+
 def _ensure_delivery_answer(content: str, reply: str, knowledge: dict[str, Any] | None = None) -> str:
     if not _is_delivery_question(content):
         return reply
@@ -1366,6 +1401,8 @@ def _fallback_reply_for_content(
         return _ensure_delivery_answer(content, "", knowledge or {}), False
     if _is_location_question(content):
         return LOCATION_FALLBACK_MESSAGE, False
+    if _is_purchase_question(content):
+        return PURCHASE_FALLBACK_MESSAGE, False
     if _is_hours_question(content):
         return HOURS_FALLBACK_MESSAGE, False
     if _is_website_question(content):
@@ -1386,6 +1423,8 @@ def _immediate_local_reply_for_content(content: str, knowledge: dict[str, Any] |
         return _ensure_delivery_answer(content, "", knowledge or {})
     if _is_location_question(content):
         return LOCATION_FALLBACK_MESSAGE
+    if _is_purchase_question(content):
+        return PURCHASE_FALLBACK_MESSAGE
     if _is_hours_question(content):
         return HOURS_FALLBACK_MESSAGE
     if _is_website_question(content):
@@ -1402,6 +1441,7 @@ def _can_answer_with_safe_fallback(content: str) -> bool:
         _is_greeting(content)
         or _is_delivery_question(content)
         or _is_location_question(content)
+        or _is_purchase_question(content)
         or _is_hours_question(content)
         or _is_website_question(content)
         or _is_product_question(content)
@@ -1422,11 +1462,13 @@ def _is_delivery_question(content: str) -> bool:
 
 
 def _is_location_question(content: str) -> bool:
-    normalized = _normalize_text(content)
+    normalized = _compact_intent_text(content)
     return (
         "ou vous trouvez vous" in normalized
-        or "ou vous trouvez-vous" in normalized
         or "ou etes vous" in normalized
+        or "ou se trouve votre boutique" in normalized
+        or "ou est votre boutique" in normalized
+        or "votre boutique est ou" in normalized
         or "votre adresse" in normalized
         or "vous etes ou" in normalized
         or "vous etes en france" in normalized
@@ -1437,18 +1479,34 @@ def _is_location_question(content: str) -> bool:
     )
 
 
+def _is_purchase_question(content: str) -> bool:
+    normalized = _compact_intent_text(content)
+    return (
+        "acheter directement" in normalized
+        or "acheter sur votre site" in normalized
+        or "achat sur votre site" in normalized
+        or "puis je acheter" in normalized
+        or "peut on acheter" in normalized
+        or "je peux acheter" in normalized
+        or "commander directement" in normalized
+        or "commander sur votre site" in normalized
+        or "puis je commander" in normalized
+        or "passer commande" in normalized
+    )
+
+
 def _is_hours_question(content: str) -> bool:
     normalized = _normalize_text(content)
     return "horaire" in normalized or "ouvert" in normalized or "ferme" in normalized or "disponible" in normalized
 
 
 def _is_website_question(content: str) -> bool:
-    normalized = _normalize_text(content)
+    normalized = _compact_intent_text(content)
     return "site internet" in normalized or "votre site" in normalized or "lien boutique" in normalized or "boutique en ligne" in normalized
 
 
 def _is_product_question(content: str) -> bool:
-    normalized = _normalize_text(content)
+    normalized = _compact_intent_text(content)
     return (
         "vous vendez quoi" in normalized
         or "que vendez vous" in normalized
