@@ -41,6 +41,7 @@ LOCATION_FALLBACK_MESSAGE = "M2 Malin est une boutique francaise basee a Aix-en-
 HOURS_FALLBACK_MESSAGE = "Nous vous repondons du lundi au vendredi, de 9 h a 18 h. Vous pouvez aussi consulter la boutique ici : https://m2malin.fr"
 WEBSITE_FALLBACK_MESSAGE = "Voici le site officiel M2 Malin : https://m2malin.fr"
 GREETING_FALLBACK_MESSAGE = "Bonjour. Merci d'avoir contacte M2 Malin. Comment puis-je vous aider aujourd'hui ? Vous pouvez me poser une question sur un produit, la livraison, une commande ou un retour."
+PRODUCT_FALLBACK_MESSAGE = "M2 Malin vend les produits affiches sur sa boutique officielle. Pour voir le catalogue et les prix a jour, consultez : https://m2malin.fr"
 EXPECTED_META_APP_ID = "1551714796659004"
 EXPECTED_META_PAGE_ID = "1163222070213376"
 REQUIRED_META_SCOPES = {
@@ -321,6 +322,21 @@ def init_messenger_assistant(
         flash(f"{count} message(s) Messenger remis en file.", "success")
         return redirect(url_for("messenger_dashboard"))
 
+    @app.post("/messenger/test-openai")
+    def test_openai_now():
+        try:
+            model = _test_openai_configuration()
+            db.session.commit()
+            flash(f"Test OpenAI reussi avec {model}.", "success")
+        except Exception as exc:
+            db.session.rollback()
+            _set_setting("messenger_last_openai_status", "failed")
+            _set_setting("messenger_last_openai_error", _safe_error_message(exc))
+            db.session.commit()
+            app.logger.warning("messenger.openai_manual_test_failed type=%s", type(exc).__name__)
+            flash("Test OpenAI en erreur. Le detail securise est affiche dans le diagnostic.", "error")
+        return redirect(url_for("messenger_dashboard"))
+
     @app.post("/messenger/sync-inbox")
     def sync_messenger_inbox_now():
         try:
@@ -513,6 +529,11 @@ def init_messenger_assistant(
                 _set_setting("messenger_last_openai_error", _safe_error_message(exc))
                 app.logger.warning("messenger.openai_failed type=%s", type(exc).__name__)
                 reply, reply_requires_human = _fallback_reply_for_content(message.content or "", _cached_site_knowledge())
+                if not reply_requires_human:
+                    _set_setting("messenger_last_openai_status", "local_fallback")
+                    _set_setting("messenger_last_openai_error", "")
+                    _set_setting("messenger_last_openai_model", "reponse_locale")
+                    _set_setting("messenger_last_openai_fallback_used", "false")
                 if reply_requires_human:
                     conversation.needs_human = True
                     conversation.bot_paused = True
@@ -1000,6 +1021,38 @@ def init_messenger_assistant(
             app.logger.warning("messenger.waiting.retried count=%s", len(rows))
         return len(rows)
 
+    def _test_openai_configuration() -> str:
+        api_key = os.getenv("OPENAI_API_KEY", "")
+        primary_model = os.getenv("OPENAI_MODEL", "")
+        if not api_key or not primary_model:
+            raise RuntimeError("OpenAI non configure")
+        from openai import OpenAI
+
+        client = OpenAI(api_key=api_key, timeout=15.0)
+        models = _openai_models_to_try(primary_model, os.getenv("OPENAI_FALLBACK_MODEL", "gpt-4.1-mini"))
+        last_exc: Exception | None = None
+        for index, model in enumerate(models):
+            try:
+                _set_setting("messenger_last_openai_model", model)
+                _set_setting("messenger_last_openai_fallback_used", "true" if index else "false")
+                client.responses.create(
+                    model=model,
+                    input="Reponds uniquement OK.",
+                    store=False,
+                    max_output_tokens=16,
+                )
+                _set_setting("messenger_last_openai_status", "ok")
+                _set_setting("messenger_last_openai_error", "")
+                return model
+            except Exception as exc:
+                last_exc = exc
+                if index == 0 and len(models) > 1 and _should_retry_openai_with_fallback(exc):
+                    continue
+                raise
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("OpenAI non configure")
+
     def _last_inbound_content(conversation_id: int) -> str:
         row = db.session.scalar(
             select(MessengerMessage)
@@ -1253,6 +1306,8 @@ def _fallback_reply_for_content(
         return HOURS_FALLBACK_MESSAGE, False
     if _is_website_question(content):
         return WEBSITE_FALLBACK_MESSAGE, False
+    if _is_product_question(content):
+        return PRODUCT_FALLBACK_MESSAGE, False
     if not include_generic:
         return "", True
     return OPENAI_FALLBACK, True
@@ -1265,6 +1320,7 @@ def _can_answer_with_safe_fallback(content: str) -> bool:
         or _is_location_question(content)
         or _is_hours_question(content)
         or _is_website_question(content)
+        or _is_product_question(content)
     )
 
 
@@ -1300,6 +1356,18 @@ def _is_hours_question(content: str) -> bool:
 def _is_website_question(content: str) -> bool:
     normalized = _normalize_text(content)
     return "site internet" in normalized or "votre site" in normalized or "lien boutique" in normalized or "boutique en ligne" in normalized
+
+
+def _is_product_question(content: str) -> bool:
+    normalized = _normalize_text(content)
+    return (
+        "vous vendez quoi" in normalized
+        or "que vendez vous" in normalized
+        or "qu est ce que vous vendez" in normalized
+        or "produit" in normalized
+        or "catalogue" in normalized
+        or "prix" in normalized
+    )
 
 
 def _looks_like_delivery_answer(reply: str) -> bool:

@@ -586,6 +586,28 @@ def test_openai_failure_records_safe_diagnostic(monkeypatch):
         assert module.db.session.execute(text("select value from app_settings where key='messenger_last_openai_status'")).scalar() == "failed"
 
 
+def test_product_question_gets_local_answer_when_openai_fails(monkeypatch):
+    module = load_app(monkeypatch)
+    sent = []
+    fake_openai(monkeypatch, error=RuntimeError("openai down"))
+    fake_meta_send(monkeypatch, sent)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+        module.db.session.execute(text("insert into app_settings(key, value, updated_at) values('messenger_auto_reply_mode', 'force_on', CURRENT_TIMESTAMP)"))
+        module.db.session.commit()
+
+    assert post_signed(client, payload(text="Bonjour, vous vendez quoi ?")).status_code == 200
+    module.messenger_assistant["process_pending"]()
+
+    with module.app.app_context():
+        assert sent[0]["text"] == "M2 Malin vend les produits affiches sur sa boutique officielle. Pour voir le catalogue et les prix a jour, consultez : https://m2malin.fr"
+        assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_last_openai_status'")).scalar() == "local_fallback"
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_last_openai_model'")).scalar() == "reponse_locale"
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_last_openai_error'")).scalar() == ""
+
+
 def test_gpt5_mini_configuration_uses_compatible_model_first(monkeypatch):
     module = load_app(monkeypatch)
     monkeypatch.setenv("OPENAI_MODEL", "gpt-5-mini")
@@ -708,6 +730,34 @@ def test_retry_all_waiting_messages_button_resets_pending_failed_and_human(monke
         ).all()
         assert rows == [("pending", 0, None, None, None), ("pending", 0, None, None, None), ("pending", 0, None, None, None)]
         assert module.db.session.execute(text("select distinct needs_human, bot_paused from messenger_conversations")).all() == [(0, 0)]
+
+
+def test_dashboard_openai_manual_test_uses_effective_model(monkeypatch):
+    module = load_app(monkeypatch)
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-5-mini")
+    monkeypatch.setenv("OPENAI_FALLBACK_MODEL", "gpt-4.1-mini")
+    calls = []
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            calls.append(kwargs["model"])
+            return types.SimpleNamespace(output_text="OK")
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.responses = FakeResponses()
+
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=FakeOpenAI))
+    client = module.app.test_client()
+    token = csrf_token(client)
+
+    response = client.post("/messenger/test-openai", headers=auth_headers(), data={"csrf_token": token})
+
+    assert response.status_code == 302
+    with module.app.app_context():
+        assert calls == ["gpt-4.1-mini"]
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_last_openai_status'")).scalar() == "ok"
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_last_openai_model'")).scalar() == "gpt-4.1-mini"
 
 
 def test_dashboard_meta_configuration_check_valid(monkeypatch):

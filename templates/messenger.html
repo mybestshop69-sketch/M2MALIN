@@ -124,6 +124,10 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <button type="submit">Relancer tous les messages en attente ou erreur</button>
   </form>
+  <form method="post" action="{{ url_for('test_openai_now') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit">Tester OpenAI maintenant</button>
+  </form>
   <form method="post" action="{{ url_for('sync_messenger_inbox_now') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <button type="submit">Synchroniser la messagerie Meta</button>
