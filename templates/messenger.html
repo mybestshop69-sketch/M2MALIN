@@ -19,7 +19,7 @@
     <article class="card"><h3>Webhook</h3><p class="status {{ 'ok' if webhook_configured else '' }}">{{ "configure" if webhook_configured else "a verifier" }}</p></article>
     <article class="card"><h3>Meta</h3><p class="status {{ 'ok' if meta_connected else '' }}">{{ "connecte" if meta_connected else "non connecte" }}</p></article>
     <article class="card"><h3>OpenAI</h3><p class="status {{ 'ok' if openai_configured else '' }}">{{ "configure" if openai_configured else "cle ou modele manquant" }}</p></article>
-    <article class="card"><h3>Autorisation manuelle</h3><p class="status {{ 'ok' if schedule_status.manual_enabled else '' }}">{{ "activee" if schedule_status.manual_enabled else "desactivee" }}</p></article>
+    <article class="card"><h3>Mode</h3><p>{{ "test actif" if schedule_status.mode == "force_on" else ("pause forcee" if schedule_status.mode == "force_off" else "horaires automatiques") }}</p></article>
     <article class="card"><h3>Horaire IA</h3><p>{{ schedule_status.start_time }} - {{ schedule_status.end_time }}</p></article>
     <article class="card"><h3>Fuseau horaire</h3><p>{{ schedule_status.timezone }}</p></article>
     <article class="card"><h3>Prochain changement</h3><p>{{ schedule_status.next_change_label }} : {{ schedule_status.next_change_at }}</p></article>
@@ -30,11 +30,15 @@
   <h2>Reglage global</h2>
   <form method="post" action="{{ url_for('messenger_settings') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <button type="submit" name="enabled" value="true">Activer temporairement l'IA</button>
+    <button type="submit" name="mode" value="force_on">Activer l'IA maintenant pour test</button>
   </form>
   <form method="post" action="{{ url_for('messenger_settings') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <button type="submit" name="enabled" value="false">Desactiver temporairement l'IA</button>
+    <button type="submit" name="mode" value="force_off">Desactiver temporairement l'IA</button>
+  </form>
+  <form method="post" action="{{ url_for('messenger_settings') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit" name="mode" value="schedule">Revenir aux horaires automatiques</button>
   </form>
   <form method="post" action="{{ url_for('messenger_settings') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

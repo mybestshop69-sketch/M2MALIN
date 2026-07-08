@@ -439,6 +439,27 @@ def test_dashboard_schedule_settings(monkeypatch):
         assert module.db.session.execute(text("select value from app_settings where key='messenger_schedule_timezone'")).scalar() == "Europe/Paris"
 
 
+def test_dashboard_manual_modes(monkeypatch):
+    module = load_app(monkeypatch)
+    client = module.app.test_client()
+
+    token = csrf_token(client)
+    assert client.post("/messenger/settings", headers=auth_headers(), data={"csrf_token": token, "mode": "force_on"}).status_code == 302
+    with module.app.app_context():
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_auto_reply_mode'")).scalar() == "force_on"
+        assert module.messenger_assistant["schedule_status"](paris_utc(2026, 1, 5, 12, 0))["active"] is True
+
+    token = csrf_token(client)
+    assert client.post("/messenger/settings", headers=auth_headers(), data={"csrf_token": token, "mode": "force_off"}).status_code == 302
+    with module.app.app_context():
+        assert module.messenger_assistant["schedule_status"](paris_utc(2026, 1, 5, 20, 0))["active"] is False
+
+    token = csrf_token(client)
+    assert client.post("/messenger/settings", headers=auth_headers(), data={"csrf_token": token, "mode": "schedule"}).status_code == 302
+    with module.app.app_context():
+        assert module.messenger_assistant["schedule_status"](paris_utc(2026, 1, 5, 12, 0))["active"] is False
+
+
 def test_messenger_schedule_boundaries(monkeypatch):
     module = load_app(monkeypatch)
     cases = [
@@ -497,6 +518,26 @@ def test_daytime_message_is_kept_for_human_without_auto_reply(monkeypatch):
         assert sent == []
         assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "human_required"
         assert module.db.session.execute(text("select needs_human from messenger_conversations")).scalar() == 1
+
+
+def test_force_on_answers_during_daytime(monkeypatch):
+    module = load_app(monkeypatch)
+    monkeypatch.setattr(sys.modules["messenger_assistant"], "_utc_now", lambda: paris_utc(2026, 1, 5, 12, 0))
+    sent = []
+    fake_openai(monkeypatch, output_text="Bonjour, je peux vous aider.")
+    fake_meta_send(monkeypatch, sent)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+        module.db.session.execute(text("insert into app_settings(key, value, updated_at) values('messenger_auto_reply_mode', 'force_on', CURRENT_TIMESTAMP)"))
+        module.db.session.commit()
+
+    assert post_signed(client, payload(text="bonjour")).status_code == 200
+    module.messenger_assistant["process_pending"]()
+
+    with module.app.app_context():
+        assert sent[0]["text"] == "Bonjour, je peux vous aider."
+        assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
 
 
 def test_dashboard_meta_configuration_check_valid(monkeypatch):

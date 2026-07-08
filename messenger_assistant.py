@@ -200,6 +200,9 @@ def init_messenger_assistant(
         enabled_value = request.form.get("enabled")
         if enabled_value in ("true", "false"):
             _set_setting("messenger_auto_reply_enabled", enabled_value)
+        mode_value = request.form.get("mode")
+        if mode_value in ("schedule", "force_on", "force_off"):
+            _set_setting("messenger_auto_reply_mode", mode_value)
         if "start_time" in request.form or "end_time" in request.form or "timezone" in request.form:
             timezone_name = (request.form.get("timezone") or DEFAULT_MESSENGER_TIMEZONE).strip()
             start_time = (request.form.get("start_time") or DEFAULT_MESSENGER_START_TIME).strip()
@@ -655,7 +658,13 @@ def init_messenger_assistant(
         return row.value == "true"
 
     def _auto_reply_allowed_now(now_utc: datetime | None = None) -> bool:
-        return _auto_reply_enabled() and _schedule_status(now_utc)["active"]
+        return _schedule_status(now_utc)["active"]
+
+    def _auto_reply_mode() -> str:
+        row = db.session.get(AppSetting, "messenger_auto_reply_mode")
+        if row and row.value in ("schedule", "force_on", "force_off"):
+            return row.value
+        return "schedule"
 
     def _schedule_status(now_utc: datetime | None = None) -> dict[str, Any]:
         timezone_name = _get_setting("messenger_schedule_timezone", DEFAULT_MESSENGER_TIMEZONE)
@@ -665,9 +674,16 @@ def init_messenger_assistant(
         schedule_active = _is_schedule_active_at(current_utc, timezone_name, start_time, end_time)
         next_change = _next_schedule_change_at(current_utc, timezone_name, start_time, end_time)
         manual_enabled = _auto_reply_enabled()
+        mode = _auto_reply_mode()
+        active = manual_enabled and schedule_active
+        if mode == "force_on":
+            active = True
+        elif mode == "force_off":
+            active = False
         return {
-            "active": manual_enabled and schedule_active,
+            "active": active,
             "manual_enabled": manual_enabled,
+            "mode": mode,
             "schedule_active": schedule_active,
             "timezone": timezone_name,
             "start_time": start_time,
