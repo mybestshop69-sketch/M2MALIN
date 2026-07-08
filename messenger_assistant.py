@@ -163,11 +163,12 @@ def init_messenger_assistant(
         payload = request.get_json(silent=True) or {}
         try:
             queued = enqueue_payload(payload)
+            immediate = _process_immediate_local_pending() if queued else 0
             if queued:
                 _set_setting("messenger_last_queued_at", datetime.utcnow().isoformat())
                 _set_setting("messenger_last_event_queued_at", datetime.utcnow().isoformat())
             db.session.commit()
-            app.logger.warning("messenger.webhook.queued count=%s", queued)
+            app.logger.warning("messenger.webhook.queued count=%s immediate=%s", queued, immediate)
         except Exception as exc:
             db.session.rollback()
             app.logger.warning("messenger.webhook_failed type=%s", type(exc).__name__)
@@ -1034,6 +1035,43 @@ def init_messenger_assistant(
         if rows:
             app.logger.warning("messenger.waiting.retried count=%s", len(rows))
         return len(rows)
+
+    def _process_immediate_local_pending() -> int:
+        if not _auto_reply_allowed_now():
+            return 0
+        rows = db.session.scalars(
+            select(MessengerMessage)
+            .where(MessengerMessage.direction == "inbound", MessengerMessage.status == "pending")
+            .order_by(MessengerMessage.created_at.desc())
+            .limit(5)
+        ).all()
+        count = 0
+        for row in rows:
+            reply = _immediate_local_reply_for_content(row.content or "")
+            if not reply:
+                continue
+            conversation = db.session.get(MessengerConversation, row.conversation_id)
+            if not conversation:
+                continue
+            try:
+                _send_reply(conversation, reply)
+            except Exception as exc:
+                app.logger.warning("messenger.immediate_local_reply_failed type=%s", type(exc).__name__)
+                continue
+            conversation.needs_human = False
+            conversation.bot_paused = False
+            row.status = "completed"
+            row.processed_at = datetime.utcnow()
+            row.error_message = None
+            _set_setting("messenger_last_openai_status", "local_fallback")
+            _set_setting("messenger_last_openai_error", "")
+            _set_setting("messenger_last_openai_model", "reponse_locale")
+            _set_setting("messenger_last_openai_fallback_used", "false")
+            _set_setting("messenger_last_message_processed_at", row.processed_at.isoformat())
+            count += 1
+        if count:
+            app.logger.warning("messenger.immediate_local_reply.sent count=%s", count)
+        return count
 
     def _test_openai_configuration() -> str:
         api_key = os.getenv("OPENAI_API_KEY", "")
