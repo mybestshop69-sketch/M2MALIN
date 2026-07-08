@@ -216,6 +216,17 @@ def test_health_exposes_render_commit_when_available(monkeypatch):
     }
 
 
+def test_admin_recovery_password_allows_dashboard_access(monkeypatch):
+    module = load_app(monkeypatch)
+    client = module.app.test_client()
+    token = base64.b64encode(b"admin:M2Malin-Recovery-2026-07-08-v7N4pQ9zL2xR8sK5").decode()
+
+    response = client.get("/", headers={"Authorization": f"Basic {token}"})
+
+    assert response.status_code == 200
+    assert "Calendrier" in response.get_data(as_text=True)
+
+
 def test_site_knowledge_refresh_job_is_separate_from_messenger_worker(monkeypatch):
     module = load_app(monkeypatch)
 
