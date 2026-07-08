@@ -643,6 +643,37 @@ def test_retry_human_required_button_uses_csrf(monkeypatch):
         assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "pending"
 
 
+def test_retry_all_waiting_messages_button_resets_pending_failed_and_human(monkeypatch):
+    module = load_app(monkeypatch)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+
+    for index, status in enumerate(("pending", "failed", "human_required"), start=1):
+        assert post_signed(client, payload(mid=f"mid-{index}", text=f"message {index}")).status_code == 200
+        with module.app.app_context():
+            module.db.session.execute(
+                text(
+                    "update messenger_messages set status=:status, retry_count=2, next_attempt_at=CURRENT_TIMESTAMP, "
+                    "error_message='ancienne erreur', processed_at=CURRENT_TIMESTAMP where meta_message_id=:mid"
+                ),
+                {"status": status, "mid": f"mid-{index}"},
+            )
+            module.db.session.execute(text("update messenger_conversations set needs_human=1, bot_paused=1"))
+            module.db.session.commit()
+
+    token = csrf_token(client)
+    response = client.post("/messenger/retry-all", headers=auth_headers(), data={"csrf_token": token})
+
+    assert response.status_code == 302
+    with module.app.app_context():
+        rows = module.db.session.execute(
+            text("select status, retry_count, next_attempt_at, error_message, processed_at from messenger_messages order by meta_message_id")
+        ).all()
+        assert rows == [("pending", 0, None, None, None), ("pending", 0, None, None, None), ("pending", 0, None, None, None)]
+        assert module.db.session.execute(text("select distinct needs_human, bot_paused from messenger_conversations")).all() == [(0, 0)]
+
+
 def test_dashboard_meta_configuration_check_valid(monkeypatch):
     monkeypatch.setenv("META_APP_ID", "1551714796659004")
     module = load_app(monkeypatch)

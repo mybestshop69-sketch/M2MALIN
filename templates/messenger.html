@@ -120,6 +120,10 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <button type="submit">Relancer les messages en attente humaine</button>
   </form>
+  <form method="post" action="{{ url_for('retry_all_waiting_messenger_messages') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit">Relancer tous les messages en attente ou erreur</button>
+  </form>
   <form method="post" action="{{ url_for('sync_messenger_inbox_now') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <button type="submit">Synchroniser la messagerie Meta</button>

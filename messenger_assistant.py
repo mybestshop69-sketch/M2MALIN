@@ -314,6 +314,13 @@ def init_messenger_assistant(
         flash(f"{count} message(s) en attente humaine remis en file.", "success")
         return redirect(url_for("messenger_dashboard"))
 
+    @app.post("/messenger/retry-all")
+    def retry_all_waiting_messenger_messages():
+        count = _retry_all_waiting_messages()
+        db.session.commit()
+        flash(f"{count} message(s) Messenger remis en file.", "success")
+        return redirect(url_for("messenger_dashboard"))
+
     @app.post("/messenger/sync-inbox")
     def sync_messenger_inbox_now():
         try:
@@ -558,6 +565,8 @@ def init_messenger_assistant(
 
         for index, model in enumerate(models):
             try:
+                _set_setting("messenger_last_openai_model", model)
+                _set_setting("messenger_last_openai_fallback_used", "true" if index else "false")
                 response = client.responses.create(
                     model=model,
                     instructions=instructions,
@@ -566,8 +575,6 @@ def init_messenger_assistant(
                     max_output_tokens=350,
                     safety_identifier=conversation.sender_hash,
                 )
-                _set_setting("messenger_last_openai_model", model)
-                _set_setting("messenger_last_openai_fallback_used", "true" if index else "false")
                 text = getattr(response, "output_text", "") or ""
                 return text.strip()[:1900] or OPENAI_FALLBACK
             except Exception as exc:
@@ -968,6 +975,32 @@ def init_messenger_assistant(
         if count:
             app.logger.warning("messenger.human_required.retried count=%s", count)
         return count
+
+    def _retry_all_waiting_messages() -> int:
+        rows = db.session.scalars(
+            select(MessengerMessage)
+            .where(
+                MessengerMessage.direction == "inbound",
+                MessengerMessage.status.in_(("pending", "failed", "human_required")),
+            )
+            .order_by(MessengerMessage.created_at.desc())
+            .limit(50)
+        ).all()
+        conversation_ids = {row.conversation_id for row in rows}
+        for conversation_id in conversation_ids:
+            conversation = db.session.get(MessengerConversation, conversation_id)
+            if conversation:
+                conversation.needs_human = False
+                conversation.bot_paused = False
+        for row in rows:
+            row.status = "pending"
+            row.error_message = None
+            row.retry_count = 0
+            row.next_attempt_at = None
+            row.processed_at = None
+        if rows:
+            app.logger.warning("messenger.waiting.retried count=%s", len(rows))
+        return len(rows)
 
     def _last_inbound_content(conversation_id: int) -> str:
         row = db.session.scalar(
