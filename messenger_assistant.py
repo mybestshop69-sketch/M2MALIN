@@ -131,8 +131,13 @@ def init_messenger_assistant(
         app.logger.warning("messenger.webhook.received")
         _set_setting("messenger_last_webhook_received_at", datetime.utcnow().isoformat())
         raw_body = request.get_data(cache=True)
-        signature_status = _meta_signature_status(raw_body, request.headers.get("X-Hub-Signature-256"))
-        _set_setting("messenger_last_signature_present", "true" if signature_status != "signature_absent" else "false")
+        _record_webhook_header_diagnostics(request.headers)
+        signature_status = _meta_signature_status(
+            raw_body,
+            request.headers.get("X-Hub-Signature-256"),
+            request.headers.get("X-Hub-Signature"),
+        )
+        _set_setting("messenger_last_signature_present", "true" if not signature_status.endswith("_absent") else "false")
         if signature_status == "signature_valid":
             _set_setting("messenger_last_signature_valid_at", datetime.utcnow().isoformat())
             app.logger.warning("messenger.webhook.signature_valid")
@@ -275,6 +280,18 @@ def init_messenger_assistant(
         flash(f"{count} message(s) bloques remis en attente.", "success")
         return redirect(url_for("messenger_dashboard"))
 
+    @app.post("/messenger/sync-inbox")
+    def sync_messenger_inbox_now():
+        try:
+            count = _sync_messenger_inbox()
+            db.session.commit()
+            flash(f"{count} message(s) synchronise(s) depuis Meta.", "success")
+        except Exception as exc:
+            db.session.rollback()
+            app.logger.warning("messenger.inbox_sync.manual_error type=%s", type(exc).__name__)
+            flash("Meta n'a pas renvoye la messagerie pour le moment. La synchronisation automatique va reessayer.", "error")
+        return redirect(url_for("messenger_dashboard"))
+
     def enqueue_payload(payload: dict[str, Any]) -> int:
         queued = 0
         for entry in payload.get("entry", []):
@@ -285,6 +302,51 @@ def init_messenger_assistant(
                     continue
                 db.session.add(MessengerEvent(event_id=event_id, payload=json.dumps(_minimal_event(page_id, event), ensure_ascii=False)))
                 queued += _enqueue_event(page_id, event)
+        return queued
+
+    def sync_messenger_inbox() -> int:
+        started_at = time.monotonic()
+        app.logger.warning("messenger.inbox_sync.started")
+        with app.app_context():
+            try:
+                count = _sync_messenger_inbox()
+                db.session.commit()
+                return count
+            except Exception as exc:
+                db.session.rollback()
+                app.logger.warning("messenger.inbox_sync.error type=%s", type(exc).__name__)
+                return 0
+            finally:
+                duration = time.monotonic() - started_at
+                app.logger.warning("messenger.inbox_sync.finished duration=%.3f", duration)
+                db.session.remove()
+
+    def _sync_messenger_inbox() -> int:
+        meta_connection = db.session.scalar(select(connection_model).where(connection_model.platform == "meta"))
+        if not meta_connection:
+            return 0
+        page_id = meta_connection.page_id or EXPECTED_META_PAGE_ID
+        token = decrypt_secret(meta_connection.access_token_encrypted)
+        client = MetaClient(os.getenv("META_GRAPH_VERSION", "v23.0"), token)
+        conversations = client.get_messenger_conversations(page_id, limit=10)
+        queued = 0
+        for conversation_payload in conversations:
+            messages = ((conversation_payload.get("messages") or {}).get("data") or [])
+            for item in reversed(messages):
+                event = _graph_message_event(page_id, item)
+                if not event:
+                    continue
+                event_id = _event_id(event)
+                if db.session.scalar(select(MessengerEvent).where(MessengerEvent.event_id == event_id)):
+                    continue
+                db.session.add(MessengerEvent(event_id=event_id, payload=json.dumps(_minimal_event(page_id, event), ensure_ascii=False)))
+                queued += _enqueue_event(page_id, event)
+        _set_setting("messenger_last_inbox_sync_at", datetime.utcnow().isoformat())
+        if queued:
+            now = datetime.utcnow().isoformat()
+            _set_setting("messenger_last_queued_at", now)
+            _set_setting("messenger_last_event_queued_at", now)
+        app.logger.warning("messenger.inbox_sync.queued count=%s", queued)
         return queued
 
     def _enqueue_event(page_id: str, event: dict[str, Any]) -> int:
@@ -574,6 +636,19 @@ def init_messenger_assistant(
             )
         return counts
 
+    def _record_webhook_header_diagnostics(headers: Any) -> None:
+        _set_setting("messenger_last_header_signature_256_present", "true" if headers.get("X-Hub-Signature-256") else "false")
+        _set_setting("messenger_last_header_signature_sha1_present", "true" if headers.get("X-Hub-Signature") else "false")
+        _set_setting("messenger_last_header_content_type_present", "true" if headers.get("Content-Type") else "false")
+        _set_setting("messenger_last_header_user_agent_present", "true" if headers.get("User-Agent") else "false")
+        app.logger.warning(
+            "messenger.webhook.headers sig256=%s sigsha1=%s content_type=%s user_agent=%s",
+            "present" if headers.get("X-Hub-Signature-256") else "absent",
+            "present" if headers.get("X-Hub-Signature") else "absent",
+            "present" if headers.get("Content-Type") else "absent",
+            "present" if headers.get("User-Agent") else "absent",
+        )
+
     def _diagnostics() -> dict[str, str]:
         return {
             "last_webhook_received_at": _get_setting("messenger_last_webhook_received_at"),
@@ -586,6 +661,11 @@ def init_messenger_assistant(
             "last_processed_at": _get_setting("messenger_last_processed_at"),
             "last_message_processed_at": _get_setting("messenger_last_message_processed_at"),
             "last_message_sent_at": _get_setting("messenger_last_message_sent_at"),
+            "last_inbox_sync_at": _get_setting("messenger_last_inbox_sync_at"),
+            "last_header_signature_256_present": _get_setting("messenger_last_header_signature_256_present", "false"),
+            "last_header_signature_sha1_present": _get_setting("messenger_last_header_signature_sha1_present", "false"),
+            "last_header_content_type_present": _get_setting("messenger_last_header_content_type_present", "false"),
+            "last_header_user_agent_present": _get_setting("messenger_last_header_user_agent_present", "false"),
             "invalid_signature_count": _get_setting("messenger_invalid_signature_count", "0"),
             "meta_checked_at": _get_setting("messenger_meta_checked_at"),
             "meta_app_id_valid": _get_setting("messenger_meta_app_id_valid"),
@@ -712,6 +792,7 @@ def init_messenger_assistant(
 
     return {
         "process_pending": process_pending,
+        "sync_messenger_inbox": sync_messenger_inbox,
         "site_knowledge": _site_knowledge,
         "refresh_site_knowledge": refresh_site_knowledge,
         "reset_stuck_processing": reset_stuck_processing,
@@ -722,22 +803,39 @@ def _valid_meta_signature(raw_body: bytes, signature_header: str | None) -> bool
     return _meta_signature_status(raw_body, signature_header) == "signature_valid"
 
 
-def _meta_signature_status(raw_body: bytes, signature_header: str | None) -> str:
+def _meta_signature_status(
+    raw_body: bytes,
+    signature_header: str | None,
+    legacy_signature_header: str | None = None,
+) -> str:
     app_secret = os.getenv("META_APP_SECRET", "")
-    if not signature_header:
-        return "signature_absent"
+    if signature_header:
+        return _validate_meta_signature_header(raw_body, signature_header, app_secret, "sha256", hashlib.sha256)
+    if legacy_signature_header:
+        return _validate_meta_signature_header(raw_body, legacy_signature_header, app_secret, "sha1", hashlib.sha1)
+    return "signature_absent"
+
+
+def _validate_meta_signature_header(
+    raw_body: bytes,
+    signature_header: str,
+    app_secret: str,
+    algorithm: str,
+    digestmod: Any,
+) -> str:
     if not app_secret:
-        return "signature_mismatch"
-    prefix = "sha256="
+        return "signature_mismatch" if algorithm == "sha256" else f"{algorithm}_signature_mismatch"
+    prefix = f"{algorithm}="
     if not signature_header.startswith(prefix):
-        return "signature_format_invalid"
-    expected = hmac.new(app_secret.encode(), raw_body, hashlib.sha256).hexdigest()
+        return "signature_format_invalid" if algorithm == "sha256" else f"{algorithm}_signature_format_invalid"
+    expected = hmac.new(app_secret.encode(), raw_body, digestmod).hexdigest()
     provided = signature_header[len(prefix):]
-    if not re.fullmatch(r"[0-9a-fA-F]{64}", provided):
-        return "signature_format_invalid"
+    expected_length = len(expected)
+    if not re.fullmatch(rf"[0-9a-fA-F]{{{expected_length}}}", provided):
+        return "signature_format_invalid" if algorithm == "sha256" else f"{algorithm}_signature_format_invalid"
     if hmac.compare_digest(provided, expected):
         return "signature_valid"
-    return "signature_mismatch"
+    return "signature_mismatch" if algorithm == "sha256" else f"{algorithm}_signature_mismatch"
 
 
 def _hash_identifier(value: str) -> str:
@@ -773,6 +871,40 @@ def _minimal_event(page_id: str, event: dict[str, Any]) -> dict[str, Any]:
         "has_attachment": bool(message.get("attachments")),
         "status": "received",
     }
+
+
+def _graph_message_event(page_id: str, item: dict[str, Any]) -> dict[str, Any] | None:
+    sender_id = str(((item.get("from") or {}).get("id")) or "")
+    if not sender_id or sender_id == page_id:
+        return None
+    message_id = str(item.get("id") or "")
+    if not message_id:
+        return None
+    attachments = ((item.get("attachments") or {}).get("data") or item.get("attachments") or [])
+    message: dict[str, Any] = {"mid": message_id}
+    if item.get("message"):
+        message["text"] = str(item.get("message") or "")
+    if attachments:
+        message["attachments"] = attachments
+    return {
+        "sender": {"id": sender_id},
+        "recipient": {"id": page_id},
+        "timestamp": _meta_time_to_ms(item.get("created_time")),
+        "message": message,
+    }
+
+
+def _meta_time_to_ms(value: Any) -> int:
+    if not value:
+        return int(time.time() * 1000)
+    try:
+        text_value = str(value).replace("Z", "+00:00")
+        if len(text_value) >= 5 and text_value[-5] in ("+", "-") and text_value[-3] != ":":
+            text_value = f"{text_value[:-2]}:{text_value[-2:]}"
+        parsed = datetime.fromisoformat(text_value)
+        return int(parsed.timestamp() * 1000)
+    except Exception:
+        return int(time.time() * 1000)
 
 
 def _message_content(message: dict[str, Any], postback: dict[str, Any]) -> tuple[str, str]:

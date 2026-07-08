@@ -69,11 +69,16 @@
     <article class="card"><h3>Derniere signature valide</h3><p>{{ diagnostics.last_signature_valid_at or "Jamais" }}</p></article>
     <article class="card"><h3>Derniere signature refusee</h3><p>{{ diagnostics.last_signature_refused_at or "Jamais" }}</p></article>
     <article class="card"><h3>Raison du dernier refus</h3><p>{{ diagnostics.last_signature_reject_reason or "Aucune" }}</p></article>
+    <article class="card"><h3>X-Hub-Signature-256</h3><p>{{ "present" if diagnostics.last_header_signature_256_present == "true" else "absent" }}</p></article>
+    <article class="card"><h3>X-Hub-Signature</h3><p>{{ "present" if diagnostics.last_header_signature_sha1_present == "true" else "absent" }}</p></article>
+    <article class="card"><h3>Content-Type</h3><p>{{ "present" if diagnostics.last_header_content_type_present == "true" else "absent" }}</p></article>
+    <article class="card"><h3>User-Agent</h3><p>{{ "present" if diagnostics.last_header_user_agent_present == "true" else "absent" }}</p></article>
     <article class="card"><h3>Dernier evenement en file</h3><p>{{ diagnostics.last_event_queued_at or "Jamais" }}</p></article>
     <article class="card"><h3>Dernier message en file</h3><p>{{ diagnostics.last_queued_at or "Jamais" }}</p></article>
     <article class="card"><h3>Dernier traitement termine</h3><p>{{ diagnostics.last_processed_at or "Jamais" }}</p></article>
     <article class="card"><h3>Dernier message traite</h3><p>{{ diagnostics.last_message_processed_at or "Jamais" }}</p></article>
     <article class="card"><h3>Dernier message envoye</h3><p>{{ diagnostics.last_message_sent_at or "Jamais" }}</p></article>
+    <article class="card"><h3>Derniere synchro Meta</h3><p>{{ diagnostics.last_inbox_sync_at or "Jamais" }}</p></article>
     <article class="card"><h3>Signatures refusees</h3><p>{{ diagnostics.invalid_signature_count }}</p></article>
   </div>
   <div class="grid cards">
@@ -85,6 +90,10 @@
   <form method="post" action="{{ url_for('reset_stuck_messenger_messages') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <button type="submit">Reinitialiser les messages bloques</button>
+  </form>
+  <form method="post" action="{{ url_for('sync_messenger_inbox_now') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit">Synchroniser la messagerie Meta</button>
   </form>
 </section>
 

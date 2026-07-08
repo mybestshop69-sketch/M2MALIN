@@ -52,6 +52,10 @@ def signed_with(body: bytes, secret: bytes) -> str:
     return f"sha256={digest}"
 
 
+def signed_sha1(body: bytes, secret: bytes = b"test-secret") -> str:
+    return f"sha1={hmac.new(secret, body, hashlib.sha1).hexdigest()}"
+
+
 def load_meta_check_script():
     path = Path(__file__).resolve().parents[1] / "scripts" / "check_meta_configuration.py"
     spec = importlib.util.spec_from_file_location("check_meta_configuration", path)
@@ -163,6 +167,13 @@ def fake_meta_send(monkeypatch, sent=None, fail=False):
     monkeypatch.setattr("services.MetaClient.send_text_message", fake_send)
 
 
+def fake_meta_conversations(monkeypatch, conversations):
+    def fake_get(self, page_id, limit=10):
+        return conversations
+
+    monkeypatch.setattr("services.MetaClient.get_messenger_conversations", fake_get)
+
+
 def test_webhook_validation_and_bad_token(monkeypatch):
     module = load_app(monkeypatch)
     client = module.app.test_client()
@@ -191,13 +202,17 @@ def test_site_knowledge_refresh_job_is_separate_from_messenger_worker(monkeypatc
 
     refresh_job = module.scheduler.get_job("messenger-refresh-site-knowledge")
     process_job = module.scheduler.get_job("messenger-pending-messages")
+    sync_job = module.scheduler.get_job("messenger-sync-inbox")
 
     assert refresh_job is not None
     assert process_job is not None
+    assert sync_job is not None
     assert refresh_job.trigger.interval.total_seconds() == 21600
     assert process_job.trigger.interval.total_seconds() == 15
+    assert sync_job.trigger.interval.total_seconds() == 60
     assert refresh_job.max_instances == 1
     assert process_job.max_instances == 1
+    assert sync_job.max_instances == 1
 
 
 def test_signature_rejection_and_queue_dedup(monkeypatch):
@@ -228,6 +243,116 @@ def test_raw_psid_never_stored_in_messenger_event(monkeypatch):
         data = json.loads(event_payload)
         assert set(data) == {"page_id", "sender_hash", "message_id", "message_type", "timestamp", "has_attachment", "status"}
         assert data["sender_hash"] == hashlib.sha256(b"user-1").hexdigest()
+
+
+def test_inbox_sync_queues_graph_message_without_raw_psid(monkeypatch):
+    module = load_app(monkeypatch)
+    fake_meta_conversations(
+        monkeypatch,
+        [
+            {
+                "id": "thread-1",
+                "messages": {
+                    "data": [
+                        {
+                            "id": "graph-mid-1",
+                            "message": "Bonjour, quels sont vos delais de livraison ?",
+                            "created_time": "2026-07-08T06:50:00+0000",
+                            "from": {"id": "user-1", "name": "Client"},
+                        }
+                    ]
+                },
+            }
+        ],
+    )
+    with module.app.app_context():
+        add_meta_connection(module)
+
+    assert module.messenger_assistant["sync_messenger_inbox"]() == 1
+
+    with module.app.app_context():
+        event_payload = module.db.session.execute(text("select payload from messenger_events")).scalar()
+        message = module.db.session.execute(text("select content from messenger_messages")).scalar()
+        assert message == "Bonjour, quels sont vos delais de livraison ?"
+        assert "user-1" not in event_payload
+        data = json.loads(event_payload)
+        assert set(data) == {"page_id", "sender_hash", "message_id", "message_type", "timestamp", "has_attachment", "status"}
+        assert data["sender_hash"] == hashlib.sha256(b"user-1").hexdigest()
+
+
+def test_inbox_sync_ignores_page_messages_and_duplicates(monkeypatch):
+    module = load_app(monkeypatch)
+    fake_meta_conversations(
+        monkeypatch,
+        [
+            {
+                "messages": {
+                    "data": [
+                        {"id": "page-mid", "message": "Reponse page", "from": {"id": "page-1"}},
+                        {"id": "graph-mid-2", "message": "Bonjour", "from": {"id": "user-1"}},
+                    ]
+                }
+            }
+        ],
+    )
+    with module.app.app_context():
+        add_meta_connection(module)
+
+    assert module.messenger_assistant["sync_messenger_inbox"]() == 1
+    assert module.messenger_assistant["sync_messenger_inbox"]() == 0
+
+    with module.app.app_context():
+        assert module.db.session.execute(text("select count(*) from messenger_messages")).scalar() == 1
+        assert module.db.session.execute(text("select content from messenger_messages")).scalar() == "Bonjour"
+
+
+def test_dashboard_sync_button_uses_csrf_and_queues_inbox(monkeypatch):
+    module = load_app(monkeypatch)
+    client = module.app.test_client()
+    fake_meta_conversations(
+        monkeypatch,
+        [{"messages": {"data": [{"id": "graph-mid-3", "message": "Bonjour", "from": {"id": "user-1"}}]}}],
+    )
+    with module.app.app_context():
+        add_meta_connection(module)
+    token = csrf_token(client)
+
+    response = client.post("/messenger/sync-inbox", headers=auth_headers(), data={"csrf_token": token})
+
+    assert response.status_code == 302
+    with module.app.app_context():
+        assert module.db.session.execute(text("select count(*) from messenger_messages")).scalar() == 1
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_last_inbox_sync_at'")).scalar()
+
+
+def test_inbox_sync_then_process_sends_reply(monkeypatch):
+    module = load_app(monkeypatch)
+    sent = []
+    fake_meta_conversations(
+        monkeypatch,
+        [
+            {
+                "messages": {
+                    "data": [
+                        {
+                            "id": "graph-mid-4",
+                            "message": "Bonjour, quels sont vos delais de livraison ?",
+                            "from": {"id": "user-1"},
+                        }
+                    ]
+                }
+            }
+        ],
+    )
+    fake_openai(monkeypatch, output_text="Livraison suivie en France sous 5 a 8 jours ouvres.")
+    fake_meta_send(monkeypatch, sent)
+    with module.app.app_context():
+        add_meta_connection(module)
+
+    assert module.messenger_assistant["sync_messenger_inbox"]() == 1
+    module.messenger_assistant["process_pending"]()
+
+    assert sent == [{"page_id": "page-1", "psid": "user-1", "text": "Livraison suivie en France sous 5 a 8 jours ouvres."}]
 
 
 def test_two_users_same_postback_create_distinct_events(monkeypatch):
@@ -811,6 +936,80 @@ def test_meta_signature_valid_with_real_hmac(monkeypatch, caplog):
     with module.app.app_context():
         assert module.db.session.execute(
             text("select value from app_settings where key='messenger_last_signature_present'")
+        ).scalar() == "true"
+
+
+def test_meta_legacy_sha1_signature_is_accepted_when_sha256_absent(monkeypatch, caplog):
+    module = load_app(monkeypatch)
+    client = module.app.test_client()
+    caplog.set_level("WARNING")
+    body = json.dumps(payload()).encode()
+
+    response = client.post(
+        "/webhooks/meta",
+        data=body,
+        content_type="application/json",
+        headers={"X-Hub-Signature": signed_sha1(body)},
+    )
+
+    assert response.status_code == 200
+    assert "messenger.webhook.signature_valid" in caplog.text
+    with module.app.app_context():
+        assert module.db.session.execute(
+            text("select value from app_settings where key='messenger_last_header_signature_256_present'")
+        ).scalar() == "false"
+        assert module.db.session.execute(
+            text("select value from app_settings where key='messenger_last_header_signature_sha1_present'")
+        ).scalar() == "true"
+        assert module.db.session.execute(text("select count(*) from messenger_messages")).scalar() == 1
+
+
+def test_meta_sha256_has_priority_over_legacy_sha1(monkeypatch):
+    module = load_app(monkeypatch)
+    client = module.app.test_client()
+    body = json.dumps(payload()).encode()
+
+    response = client.post(
+        "/webhooks/meta",
+        data=body,
+        content_type="application/json",
+        headers={
+            "X-Hub-Signature-256": "sha256=bad",
+            "X-Hub-Signature": signed_sha1(body),
+        },
+    )
+
+    assert response.status_code == 403
+    with module.app.app_context():
+        assert module.db.session.execute(
+            text("select value from app_settings where key='messenger_last_signature_reject_reason'")
+        ).scalar() == "signature_format_invalid"
+        assert module.db.session.execute(text("select count(*) from messenger_messages")).scalar() == 0
+
+
+def test_webhook_header_presence_diagnostics_are_recorded_without_values(monkeypatch, caplog):
+    module = load_app(monkeypatch)
+    client = module.app.test_client()
+    caplog.set_level("WARNING")
+    body = json.dumps(payload()).encode()
+
+    response = client.post(
+        "/webhooks/meta",
+        data=body,
+        content_type="application/json",
+        headers={"X-Hub-Signature": signed_sha1(body), "User-Agent": "Meta-Test-Agent"},
+    )
+
+    assert response.status_code == 200
+    assert "messenger.webhook.headers sig256=absent sigsha1=present content_type=present user_agent=present" in caplog.text
+    assert signed_sha1(body) not in caplog.text
+    assert "Meta-Test-Agent" not in caplog.text
+    with module.app.app_context():
+        assert module.db.session.execute(
+            text("select value from app_settings where key='messenger_last_header_content_type_present'")
+        ).scalar() == "true"
+        assert module.db.session.execute(
+            text("select value from app_settings where key='messenger_last_header_user_agent_present'")
         ).scalar() == "true"
 
 

@@ -89,6 +89,19 @@ class MetaClient:
         )
         return _json_or_raise(response, "Meta Messenger")
 
+    def get_messenger_conversations(self, page_id: str, limit: int = 10) -> list[dict[str, Any]]:
+        response = requests.get(
+            f"{self.base_url}/{page_id}/conversations",
+            params={
+                "platform": "messenger",
+                "fields": "id,updated_time,messages.limit(10){id,message,created_time,from,to,attachments}",
+                "limit": limit,
+                "access_token": self.access_token,
+            },
+            timeout=10,
+        )
+        return _json_or_raise(response, "Meta Messenger").get("data", [])
+
     def send_text_message(self, page_id: str, recipient_psid: str, text: str) -> list[dict[str, Any]]:
         if not text.strip():
             raise SocialApiError("Messenger: message vide.")

@@ -575,6 +575,16 @@ scheduler.add_job(
     misfire_grace_time=300,
     next_run_time=datetime.utcnow() + timedelta(seconds=30),
 )
+scheduler.add_job(
+    messenger_assistant["sync_messenger_inbox"],
+    "interval",
+    seconds=60,
+    id="messenger-sync-inbox",
+    max_instances=1,
+    coalesce=True,
+    misfire_grace_time=30,
+    next_run_time=datetime.utcnow() + timedelta(seconds=20),
+)
 if not app.testing and os.getenv("DISABLE_SCHEDULER", "false").lower() != "true":
     scheduler.start()
 
