@@ -783,6 +783,9 @@ def test_openai_single_word_yes_is_replaced_by_complete_reply(monkeypatch):
     with module.app.app_context():
         assert sent[0]["text"] == "Je vous aide avec plaisir. Pouvez-vous me donner un peu plus de details sur votre demande afin que je vous reponde correctement ?"
         assert sent[0]["text"].lower() != "oui"
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_last_outbound_guard_used'")).scalar() == "true"
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_last_outbound_was_short_yes'")).scalar() == "false"
+        assert "Je vous aide avec plaisir" in module.db.session.execute(text("select value from app_settings where key='messenger_last_outbound_text_preview'")).scalar()
         assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
 
 

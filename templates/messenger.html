@@ -99,6 +99,9 @@
     <article class="card"><h3>Dernier traitement termine</h3><p>{{ diagnostics.last_processed_at or "Jamais" }}</p></article>
     <article class="card"><h3>Dernier message traite</h3><p>{{ diagnostics.last_message_processed_at or "Jamais" }}</p></article>
     <article class="card"><h3>Dernier message envoye</h3><p>{{ diagnostics.last_message_sent_at or "Jamais" }}</p></article>
+    <article class="card"><h3>Derniere reponse bot</h3><p>{{ diagnostics.last_outbound_text_preview or "Jamais" }}</p></article>
+    <article class="card"><h3>Garde-fou reponse</h3><p>{{ "oui" if diagnostics.last_outbound_guard_used == "true" else "non" }}</p></article>
+    <article class="card"><h3>Reponse courte oui</h3><p>{{ "oui" if diagnostics.last_outbound_was_short_yes == "true" else "non" }}</p></article>
     <article class="card"><h3>Derniere synchro Meta</h3><p>{{ diagnostics.last_inbox_sync_at or "Jamais" }}</p></article>
     <article class="card"><h3>Dernier statut OpenAI</h3><p>{{ diagnostics.last_openai_status or "Jamais" }}</p></article>
     <article class="card"><h3>Dernier modele OpenAI</h3><p>{{ diagnostics.last_openai_model or "Jamais" }}</p></article>

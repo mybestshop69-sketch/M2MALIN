@@ -525,7 +525,9 @@ def init_messenger_assistant(
                 return
             local_reply = _immediate_local_reply_for_content(message.content or "", _cached_site_knowledge())
             if local_reply:
+                before_final_reply = local_reply
                 local_reply = _finalize_reply(message.content or "", local_reply, _cached_site_knowledge())
+                _set_setting("messenger_pending_outbound_guard_used", "true" if local_reply != before_final_reply else "false")
                 _send_reply(conversation, local_reply)
                 conversation.needs_human = False
                 conversation.bot_paused = False
@@ -559,7 +561,9 @@ def init_messenger_assistant(
                     conversation.bot_paused = True
             reply = _ensure_delivery_answer(message.content or "", reply, _cached_site_knowledge())
             reply, openai_requires_human = _clean_openai_reply(reply)
+            before_final_reply = reply
             reply = _finalize_reply(message.content or "", reply, _cached_site_knowledge())
+            _set_setting("messenger_pending_outbound_guard_used", "true" if reply != before_final_reply else "false")
             _send_reply(conversation, reply)
             if openai_requires_human or reply_requires_human:
                 conversation.needs_human = True
@@ -631,7 +635,13 @@ def init_messenger_assistant(
         meta_connection = db.session.scalar(select(connection_model).where(connection_model.platform == "meta"))
         if not meta_connection:
             raise RuntimeError("Meta non connecte")
+        original_text = (text or "").strip()
         text = _safe_outbound_text(text)
+        guard_used = text != original_text or _get_setting("messenger_pending_outbound_guard_used", "false") == "true"
+        _set_setting("messenger_last_outbound_text_preview", text[:180])
+        _set_setting("messenger_last_outbound_guard_used", "true" if guard_used else "false")
+        _set_setting("messenger_last_outbound_was_short_yes", "true" if _compact_intent_text(text) == "oui" else "false")
+        _set_setting("messenger_pending_outbound_guard_used", "false")
         psid = decrypt_secret(conversation.sender_id_encrypted)
         token = decrypt_secret(meta_connection.access_token_encrypted)
         responses = MetaClient(os.getenv("META_GRAPH_VERSION", "v23.0"), token).send_text_message(meta_connection.page_id or "", psid, text)
@@ -835,6 +845,9 @@ def init_messenger_assistant(
             "last_processed_at": _get_setting("messenger_last_processed_at"),
             "last_message_processed_at": _get_setting("messenger_last_message_processed_at"),
             "last_message_sent_at": _get_setting("messenger_last_message_sent_at"),
+            "last_outbound_text_preview": _get_setting("messenger_last_outbound_text_preview"),
+            "last_outbound_guard_used": _get_setting("messenger_last_outbound_guard_used", "false"),
+            "last_outbound_was_short_yes": _get_setting("messenger_last_outbound_was_short_yes", "false"),
             "last_inbox_sync_at": _get_setting("messenger_last_inbox_sync_at"),
             "last_openai_status": _get_setting("messenger_last_openai_status"),
             "last_openai_error": _get_setting("messenger_last_openai_error"),
@@ -1068,7 +1081,9 @@ def init_messenger_assistant(
             reply = _immediate_local_reply_for_content(row.content or "", _cached_site_knowledge())
             if not reply:
                 continue
+            before_final_reply = reply
             reply = _finalize_reply(row.content or "", reply, _cached_site_knowledge())
+            _set_setting("messenger_pending_outbound_guard_used", "true" if reply != before_final_reply else "false")
             conversation = db.session.get(MessengerConversation, row.conversation_id)
             if not conversation:
                 continue
