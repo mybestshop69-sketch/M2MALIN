@@ -14,6 +14,9 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 
 
+ORDER_LOOKUP_MESSAGE = "Afin que je puisse retrouver votre commande, pouvez-vous me communiquer votre numero de commande (exemple : #12345) ? Si necessaire, je vous demanderai aussi l'adresse e-mail utilisee lors de l'achat afin de verifier votre commande."
+
+
 def load_app(monkeypatch):
     for name in ["app", "messenger_assistant"]:
         sys.modules.pop(name, None)
@@ -895,7 +898,8 @@ def test_system_prompt_contains_official_advisor_rules(monkeypatch):
     assert "Reponds toujours dans la langue utilisee par le client" in prompt
     assert "N'invente jamais une information" in prompt
     assert "Je ne dispose pas de cette information" in prompt
-    assert "devis, une commande ou un suivi" in prompt
+    assert "Pour une commande, une livraison, un remboursement, un echange, un retour ou un suivi" in prompt
+    assert "demande d'abord poliment le numero de commande" in prompt
     assert "code promo" in prompt
     assert "quel produit choisir" in prompt
 
@@ -904,11 +908,11 @@ def test_autonomous_business_questions_get_immediate_local_replies(monkeypatch):
     cases = [
         (
             "Ou est ma commande ?",
-            "Pour suivre une commande, envoyez-moi le numero de commande et l'adresse e-mail utilisee lors de l'achat. Je pourrai alors orienter la demande correctement sans vous demander d'information bancaire.",
+            ORDER_LOOKUP_MESSAGE,
         ),
         (
             "J'ai fait une commande dans votre boutique et j'ai pas de nouvelle",
-            "Pour suivre une commande, envoyez-moi le numero de commande et l'adresse e-mail utilisee lors de l'achat. Je pourrai alors orienter la demande correctement sans vous demander d'information bancaire.",
+            ORDER_LOOKUP_MESSAGE,
         ),
         (
             "Comment payer ?",
@@ -951,6 +955,51 @@ def test_autonomous_business_questions_get_immediate_local_replies(monkeypatch):
             assert sent[0]["text"] == expected
             assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
             assert module.db.session.execute(text("select value from app_settings where key='messenger_last_openai_model'")).scalar() == "reponse_locale"
+
+
+def test_order_question_answers_even_after_daily_limit(monkeypatch):
+    module = load_app(monkeypatch)
+    sent = []
+    fake_openai(monkeypatch, error=RuntimeError("openai should not be called"))
+    fake_meta_send(monkeypatch, sent)
+    with module.app.app_context():
+        add_meta_connection(module)
+        encrypted_sender = module.encrypt_secret("user-1")
+        module.db.session.execute(
+            text(
+                "insert into messenger_conversations(sender_hash, sender_id_encrypted, needs_human, bot_paused, created_at, updated_at, last_message_at) "
+                "values('hash-order-limit', :sender, 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            ),
+            {"sender": encrypted_sender},
+        )
+        conversation_id = module.db.session.execute(text("select id from messenger_conversations")).scalar()
+        for index in range(20):
+            module.db.session.execute(
+                text(
+                    "insert into messenger_messages(conversation_id, meta_message_id, direction, message_type, content, status, retry_count, created_at) "
+                    "values(:conversation_id, :mid, 'outbound', 'text', 'ancienne reponse', 'completed', 0, CURRENT_TIMESTAMP)"
+                ),
+                {"conversation_id": conversation_id, "mid": f"out-daily-{index}"},
+            )
+        module.db.session.execute(
+            text(
+                "insert into messenger_messages(conversation_id, meta_message_id, direction, message_type, content, status, retry_count, created_at) "
+                "values(:conversation_id, 'in-order-after-limit', 'inbound', 'text', :content, 'pending', 0, CURRENT_TIMESTAMP)"
+            ),
+            {
+                "conversation_id": conversation_id,
+                "content": "j'ai fait une commande dans votre boutique et jai pas de nouvelle",
+            },
+        )
+        module.db.session.commit()
+
+    module.messenger_assistant["process_pending"]()
+
+    with module.app.app_context():
+        assert sent[-1]["text"] == ORDER_LOOKUP_MESSAGE
+        assert module.db.session.execute(text("select status from messenger_messages where meta_message_id='in-order-after-limit'")).scalar() == "completed"
+        row = module.db.session.execute(text("select needs_human, bot_paused from messenger_conversations where id=:id"), {"id": conversation_id}).first()
+        assert row == (0, 0)
 
 
 def test_gpt5_mini_configuration_uses_compatible_model_first(monkeypatch):
