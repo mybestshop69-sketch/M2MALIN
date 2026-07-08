@@ -532,7 +532,7 @@ def test_force_on_answers_during_daytime(monkeypatch):
         module.db.session.execute(text("insert into app_settings(key, value, updated_at) values('messenger_auto_reply_mode', 'force_on', CURRENT_TIMESTAMP)"))
         module.db.session.commit()
 
-    assert post_signed(client, payload(text="bonjour")).status_code == 200
+    assert post_signed(client, payload(text="Pouvez-vous analyser ma demande detaillee ?")).status_code == 200
     module.messenger_assistant["process_pending"]()
 
     with module.app.app_context():
@@ -635,6 +635,25 @@ def test_product_question_gets_immediate_webhook_reply(monkeypatch):
     assert response.status_code == 200
     with module.app.app_context():
         assert sent[0]["text"] == "M2 Malin vend les produits affiches sur sa boutique officielle. Pour voir le catalogue et les prix a jour, consultez : https://m2malin.fr"
+        assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_last_openai_model'")).scalar() == "reponse_locale"
+
+
+def test_greeting_gets_immediate_webhook_reply(monkeypatch):
+    module = load_app(monkeypatch)
+    sent = []
+    fake_meta_send(monkeypatch, sent)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+        module.db.session.execute(text("insert into app_settings(key, value, updated_at) values('messenger_auto_reply_mode', 'force_on', CURRENT_TIMESTAMP)"))
+        module.db.session.commit()
+
+    response = post_signed(client, payload(text="bonjour"))
+
+    assert response.status_code == 200
+    with module.app.app_context():
+        assert sent[0]["text"] == "Bonjour. Merci d'avoir contacte M2 Malin. Comment puis-je vous aider aujourd'hui ? Vous pouvez me poser une question sur un produit, la livraison, une commande ou un retour."
         assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
         assert module.db.session.execute(text("select value from app_settings where key='messenger_last_openai_model'")).scalar() == "reponse_locale"
 
@@ -1306,7 +1325,7 @@ def test_process_pending_always_finishes_and_removes_session(monkeypatch):
     with module.app.app_context():
         add_meta_connection(module)
 
-    assert post_signed(client, payload()).status_code == 200
+    assert post_signed(client, payload(text="Pouvez-vous analyser ma demande detaillee ?")).status_code == 200
     before_process = len(removed)
     module.messenger_assistant["process_pending"]()
 
@@ -1330,7 +1349,7 @@ def test_shopify_slow_call_does_not_block_messenger_processing(monkeypatch):
     with module.app.app_context():
         add_meta_connection(module)
 
-    assert post_signed(client, payload()).status_code == 200
+    assert post_signed(client, payload(text="Pouvez-vous analyser ma demande detaillee ?")).status_code == 200
     module.messenger_assistant["process_pending"]()
 
     with module.app.app_context():
@@ -1464,8 +1483,8 @@ def test_next_message_is_processed_after_previous_failure(monkeypatch):
     with module.app.app_context():
         add_meta_connection(module)
 
-    assert post_signed(client, payload(mid="mid-1", sender="user-1")).status_code == 200
-    assert post_signed(client, payload(mid="mid-2", sender="user-2")).status_code == 200
+    assert post_signed(client, payload(mid="mid-1", sender="user-1", text="Demande detaillee numero un")).status_code == 200
+    assert post_signed(client, payload(mid="mid-2", sender="user-2", text="Demande detaillee numero deux")).status_code == 200
     module.messenger_assistant["process_pending"]()
     module.messenger_assistant["process_pending"]()
 
