@@ -399,7 +399,7 @@ def init_messenger_assistant(
             conversation.updated_at = now
         message_type, content = _message_content(message, postback)
         status = "pending"
-        if conversation.needs_human or conversation.bot_paused:
+        if (conversation.needs_human or conversation.bot_paused) and _auto_reply_mode() != "force_on":
             status = "pending" if _can_answer_with_safe_fallback(content) else "human_required"
         db.session.add(MessengerMessage(conversation_id=conversation.id, meta_message_id=meta_message_id, direction="inbound", message_type=message_type, content=content, status=status))
         app.logger.warning("messenger.message.queued type=%s", message_type)
@@ -453,7 +453,7 @@ def init_messenger_assistant(
                 message.processed_at = datetime.utcnow()
                 message.error_message = "IA inactive selon les horaires Messenger"
                 return
-            if conversation.bot_paused:
+            if conversation.bot_paused and _auto_reply_mode() != "force_on":
                 paused_reply, paused_reply_requires_human = _fallback_reply_for_content(
                     message.content or "",
                     _cached_site_knowledge(),
@@ -506,6 +506,8 @@ def init_messenger_assistant(
                 conversation.bot_paused = True
                 message.status = "human_required"
             else:
+                conversation.needs_human = False
+                conversation.bot_paused = False
                 message.status = "completed"
             message.processed_at = datetime.utcnow()
             _set_setting("messenger_last_message_processed_at", message.processed_at.isoformat())

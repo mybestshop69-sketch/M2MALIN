@@ -540,6 +540,31 @@ def test_force_on_answers_during_daytime(monkeypatch):
         assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
 
 
+def test_force_on_answers_paused_conversation(monkeypatch):
+    module = load_app(monkeypatch)
+    sent = []
+    fake_openai(monkeypatch, output_text="Nous vendons des produits pratiques pour la maison et le rangement.")
+    fake_meta_send(monkeypatch, sent)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+        module.db.session.execute(text("insert into app_settings(key, value, updated_at) values('messenger_auto_reply_mode', 'force_on', CURRENT_TIMESTAMP)"))
+        module.db.session.commit()
+
+    assert post_signed(client, payload(mid="mid-1", text="Question a verifier")).status_code == 200
+    with module.app.app_context():
+        module.db.session.execute(text("update messenger_messages set status='human_required' where meta_message_id='mid-1'"))
+        module.db.session.execute(text("update messenger_conversations set needs_human=1, bot_paused=1"))
+        module.db.session.commit()
+    assert post_signed(client, payload(mid="mid-2", text="Bonjour, vous vendez quoi ?")).status_code == 200
+    module.messenger_assistant["process_pending"]()
+
+    with module.app.app_context():
+        assert sent[0]["text"] == "Nous vendons des produits pratiques pour la maison et le rangement."
+        assert module.db.session.execute(text("select status from messenger_messages where meta_message_id='mid-2'")).scalar() == "completed"
+        assert module.db.session.execute(text("select needs_human, bot_paused from messenger_conversations")).first() == (0, 0)
+
+
 def test_dashboard_meta_configuration_check_valid(monkeypatch):
     monkeypatch.setenv("META_APP_ID", "1551714796659004")
     module = load_app(monkeypatch)
