@@ -461,6 +461,7 @@ def test_dashboard_manual_modes(monkeypatch):
 
 
 def test_messenger_schedule_boundaries(monkeypatch):
+    monkeypatch.setenv("MESSENGER_AUTO_REPLY_MODE", "schedule")
     module = load_app(monkeypatch)
     cases = [
         (paris_utc(2026, 1, 5, 8, 59), True),
@@ -476,6 +477,7 @@ def test_messenger_schedule_boundaries(monkeypatch):
 
 
 def test_messenger_schedule_weekend(monkeypatch):
+    monkeypatch.setenv("MESSENGER_AUTO_REPLY_MODE", "schedule")
     module = load_app(monkeypatch)
 
     with module.app.app_context():
@@ -485,6 +487,7 @@ def test_messenger_schedule_weekend(monkeypatch):
 
 
 def test_messenger_schedule_dst_transitions_europe_paris(monkeypatch):
+    monkeypatch.setenv("MESSENGER_AUTO_REPLY_MODE", "schedule")
     module = load_app(monkeypatch)
 
     with module.app.app_context():
@@ -502,6 +505,7 @@ def test_messenger_schedule_dst_transitions_europe_paris(monkeypatch):
 
 
 def test_daytime_message_is_kept_for_human_without_auto_reply(monkeypatch):
+    monkeypatch.setenv("MESSENGER_AUTO_REPLY_MODE", "schedule")
     module = load_app(monkeypatch)
     monkeypatch.setattr(sys.modules["messenger_assistant"], "_utc_now", lambda: paris_utc(2026, 1, 5, 12, 0))
     sent = []
@@ -518,6 +522,24 @@ def test_daytime_message_is_kept_for_human_without_auto_reply(monkeypatch):
         assert sent == []
         assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "human_required"
         assert module.db.session.execute(text("select needs_human from messenger_conversations")).scalar() == 1
+
+
+def test_default_autonomous_mode_answers_during_daytime(monkeypatch):
+    module = load_app(monkeypatch)
+    monkeypatch.setattr(sys.modules["messenger_assistant"], "_utc_now", lambda: paris_utc(2026, 1, 5, 12, 0))
+    sent = []
+    fake_openai(monkeypatch, output_text="Reponse autonome.")
+    fake_meta_send(monkeypatch, sent)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+
+    assert post_signed(client, payload(text="Pouvez-vous analyser ma demande detaillee ?")).status_code == 200
+    module.messenger_assistant["process_pending"]()
+
+    with module.app.app_context():
+        assert sent[0]["text"] == "Reponse autonome."
+        assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
 
 
 def test_force_on_answers_during_daytime(monkeypatch):

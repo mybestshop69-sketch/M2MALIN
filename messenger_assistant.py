@@ -739,7 +739,10 @@ def init_messenger_assistant(
         row = db.session.get(AppSetting, "messenger_auto_reply_mode")
         if row and row.value in ("schedule", "force_on", "force_off"):
             return row.value
-        return "schedule"
+        env_mode = os.getenv("MESSENGER_AUTO_REPLY_MODE", "force_on").strip()
+        if env_mode in ("schedule", "force_on", "force_off"):
+            return env_mode
+        return "force_on"
 
     def _schedule_status(now_utc: datetime | None = None) -> dict[str, Any]:
         timezone_name = _get_setting("messenger_schedule_timezone", DEFAULT_MESSENGER_TIMEZONE)
@@ -751,7 +754,9 @@ def init_messenger_assistant(
         manual_enabled = _auto_reply_enabled()
         mode = _auto_reply_mode()
         active = manual_enabled and schedule_active
-        if mode == "force_on":
+        if not manual_enabled:
+            active = False
+        elif mode == "force_on":
             active = True
         elif mode == "force_off":
             active = False
