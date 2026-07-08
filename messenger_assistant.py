@@ -388,6 +388,7 @@ def init_messenger_assistant(
             try:
                 reset_stuck_processing()
                 recover_safe_faq_messages()
+                suppress_stale_safe_faq_messages()
                 message = db.session.scalar(
                     select(MessengerMessage)
                     .where(
@@ -806,18 +807,50 @@ def init_messenger_assistant(
                 MessengerMessage.direction == "inbound",
                 MessengerMessage.status == "human_required",
                 MessengerMessage.processed_at.is_(None),
-            )
+            ).order_by(MessengerMessage.conversation_id.asc(), MessengerMessage.id.desc())
         ).all()
         recovered = 0
+        seen_conversations: set[int] = set()
         for row in rows:
             if _can_answer_with_safe_fallback(row.content or ""):
-                row.status = "pending"
-                row.error_message = None
-                row.next_attempt_at = None
-                recovered += 1
+                if row.conversation_id in seen_conversations:
+                    row.status = "completed"
+                    row.processed_at = datetime.utcnow()
+                    row.error_message = "Ancienne FAQ ignoree apres recuperation du dernier message"
+                else:
+                    row.status = "pending"
+                    row.error_message = None
+                    row.next_attempt_at = None
+                    seen_conversations.add(row.conversation_id)
+                    recovered += 1
         if recovered:
             app.logger.warning("messenger.safe_faq.recovered count=%s", recovered)
         return recovered
+
+    def suppress_stale_safe_faq_messages() -> int:
+        rows = db.session.scalars(
+            select(MessengerMessage)
+            .where(
+                MessengerMessage.direction == "inbound",
+                MessengerMessage.status == "pending",
+            )
+            .order_by(MessengerMessage.conversation_id.asc(), MessengerMessage.id.desc())
+        ).all()
+        kept_conversations: set[int] = set()
+        suppressed = 0
+        for row in rows:
+            if not _can_answer_with_safe_fallback(row.content or ""):
+                continue
+            if row.conversation_id in kept_conversations:
+                row.status = "completed"
+                row.processed_at = datetime.utcnow()
+                row.error_message = "Ancienne FAQ ignoree pour eviter une reponse en double"
+                suppressed += 1
+            else:
+                kept_conversations.add(row.conversation_id)
+        if suppressed:
+            app.logger.warning("messenger.safe_faq.suppressed count=%s", suppressed)
+        return suppressed
 
     def _last_inbound_content(conversation_id: int) -> str:
         row = db.session.scalar(
