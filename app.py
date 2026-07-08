@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import csv
 import hashlib
+import io
 import os
 import secrets
 from datetime import datetime, timedelta
@@ -220,6 +222,61 @@ def new_post():
         return redirect(url_for("index"))
 
     return render_template("new_post.html")
+
+
+@app.route("/posts/import", methods=["GET", "POST"])
+def import_posts():
+    if request.method == "POST":
+        uploaded = request.files.get("csv_file")
+        if uploaded is None or uploaded.filename == "":
+            flash("Ajoutez un fichier CSV.", "error")
+            return render_template("import_posts.html")
+
+        try:
+            text = uploaded.read().decode("utf-8-sig")
+            rows = csv.DictReader(io.StringIO(text))
+            imported = 0
+            local_tz = ZoneInfo(os.getenv("DEFAULT_TIMEZONE", "Europe/Paris"))
+            auto_mode = env_bool("AUTO_MODE_ENABLED", False)
+            approval_required = env_bool("HUMAN_APPROVAL_REQUIRED", True)
+            status = "approved" if auto_mode and not approval_required else "draft"
+
+            required_columns = {"title", "caption", "platforms", "scheduled_at"}
+            if not rows.fieldnames or not required_columns.issubset(set(rows.fieldnames)):
+                missing = ", ".join(sorted(required_columns - set(rows.fieldnames or [])))
+                flash(f"Colonnes CSV manquantes : {missing}.", "error")
+                return render_template("import_posts.html")
+
+            for row in rows:
+                title = (row.get("title") or "").strip()
+                caption = (row.get("caption") or "").strip()
+                platforms = (row.get("platforms") or "").strip()
+                scheduled_raw = (row.get("scheduled_at") or "").strip()
+                if not title or not caption or not platforms or not scheduled_raw:
+                    continue
+
+                local_dt = datetime.fromisoformat(scheduled_raw).replace(tzinfo=local_tz)
+                scheduled_utc = local_dt.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+                post = SocialPost(
+                    title=title[:180],
+                    caption=caption,
+                    media_url=(row.get("media_url") or "").strip() or None,
+                    media_type=(row.get("media_type") or "image").strip() or "image",
+                    platforms=platforms,
+                    scheduled_at=scheduled_utc,
+                    status=status,
+                )
+                db.session.add(post)
+                imported += 1
+
+            db.session.commit()
+            flash(f"{imported} publication(s) importee(s).", "success")
+            return redirect(url_for("index"))
+        except Exception as exc:
+            db.session.rollback()
+            flash(f"Import impossible : {exc}", "error")
+
+    return render_template("import_posts.html")
 
 
 @app.post("/posts/<int:post_id>/approve")

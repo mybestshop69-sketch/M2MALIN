@@ -51,7 +51,10 @@
 <section>
   <div class="section-title">
     <h2>Calendrier éditorial</h2>
-    <a href="{{ url_for('new_post') }}">Ajouter</a>
+    <div class="actions">
+      <a href="{{ url_for('import_posts') }}">Importer</a>
+      <a href="{{ url_for('new_post') }}">Ajouter</a>
+    </div>
   </div>
 
   {% if posts %}

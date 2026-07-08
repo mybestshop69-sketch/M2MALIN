@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Importer des publications — M² Malin{% endblock %}
+{% block content %}
+<section class="form-page">
+  <div>
+    <p class="eyebrow">CALENDRIER EDITORIAL</p>
+    <h1>Importer des publications</h1>
+    <p>Colonnes requises : title, caption, platforms, scheduled_at. Colonnes optionnelles : media_url, media_type.</p>
+  </div>
+
+  <form class="form-card" method="post" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    <label>
+      Fichier CSV
+      <input name="csv_file" type="file" accept=".csv,text/csv" required>
+    </label>
+
+    <p class="muted">
+      Exemple de date : 2026-07-09T12:00. Plateformes : tiktok, facebook, instagram ou une liste separee par des virgules.
+    </p>
+
+    <button class="button" type="submit">Importer</button>
+  </form>
+</section>
+{% endblock %}

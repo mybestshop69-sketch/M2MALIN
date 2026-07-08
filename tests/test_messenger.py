@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import importlib
 import importlib.util
+import io
 import json
 import sys
 import types
@@ -37,6 +38,14 @@ def auth_headers():
 
 def csrf_token(client):
     response = client.get("/messenger", headers=auth_headers())
+    body = response.get_data(as_text=True)
+    marker = 'name="csrf_token" value="'
+    start = body.index(marker) + len(marker)
+    return body[start:body.index('"', start)]
+
+
+def dashboard_csrf_token(client, path="/"):
+    response = client.get(path, headers=auth_headers())
     body = response.get_data(as_text=True)
     marker = 'name="csrf_token" value="'
     start = body.index(marker) + len(marker)
@@ -2026,3 +2035,33 @@ def test_delivery_question_without_policy_uses_required_fallback(monkeypatch):
     module.messenger_assistant["process_pending"]()
 
     assert sent[0]["text"] == "Les delais de livraison peuvent varier selon le produit. Ils sont indiques sur la fiche du produit et lors de la validation de la commande. Envoyez-moi le nom ou le lien du produit concerne afin que je verifie le delai correspondant."
+
+
+def test_import_posts_csv_creates_approved_posts_in_auto_mode(monkeypatch):
+    monkeypatch.setenv("AUTO_MODE_ENABLED", "true")
+    monkeypatch.setenv("HUMAN_APPROVAL_REQUIRED", "false")
+    module = load_app(monkeypatch)
+    client = module.app.test_client()
+    token = dashboard_csrf_token(client, "/posts/import")
+    csv_body = (
+        "title,caption,platforms,scheduled_at,media_url,media_type\n"
+        "TikTok demain,Astuce rangement utile,tiktok,2026-07-09T12:00,https://m2malin.fr/video.mp4,video\n"
+    )
+
+    response = client.post(
+        "/posts/import",
+        headers=auth_headers(),
+        data={
+            "csrf_token": token,
+            "csv_file": (io.BytesIO(csv_body.encode("utf-8")), "posts.csv"),
+        },
+        content_type="multipart/form-data",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    with module.app.app_context():
+        posts = module.db.session.scalars(module.select(module.SocialPost)).all()
+    assert len(posts) == 1
+    assert posts[0].platforms == "tiktok"
+    assert posts[0].status == "approved"
