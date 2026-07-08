@@ -801,6 +801,55 @@ def test_openai_single_word_yes_is_replaced_by_complete_reply(monkeypatch):
         assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
 
 
+def test_autonomous_business_questions_get_immediate_local_replies(monkeypatch):
+    cases = [
+        (
+            "Ou est ma commande ?",
+            "Pour suivre une commande, envoyez-moi le numero de commande et l'adresse e-mail utilisee lors de l'achat. Je pourrai alors orienter la demande correctement sans vous demander d'information bancaire.",
+        ),
+        (
+            "Comment payer ?",
+            "Le paiement se fait directement sur le site officiel M2 Malin au moment de la commande : https://m2malin.fr. N'envoyez jamais vos coordonnees bancaires par Messenger.",
+        ),
+        (
+            "Je veux un remboursement",
+            "Pour une demande de remboursement, envoyez-moi le numero de commande, l'adresse e-mail utilisee lors de l'achat et le produit concerne. Je ne peux pas valider un remboursement sans verification, mais je peux preparer la demande pour l'equipe.",
+        ),
+        (
+            "Je veux faire un retour",
+            "Pour un retour ou un echange, indiquez-moi le numero de commande, le produit concerne et la raison du retour. Je transmets les elements utiles si une verification est necessaire.",
+        ),
+        (
+            "Le produit est-il en stock ?",
+            "Les disponibilites peuvent changer selon les produits. Le plus fiable est de consulter la fiche produit sur la boutique officielle : https://m2malin.fr. Si vous m'envoyez le nom ou le lien du produit, je vous aide a verifier.",
+        ),
+        (
+            "Combien ca coute ?",
+            "Les prix a jour sont ceux affiches sur la boutique officielle M2 Malin : https://m2malin.fr. Si vous m'envoyez le nom ou le lien du produit, je peux vous orienter vers la bonne fiche.",
+        ),
+        (
+            "Le produit est casse",
+            "Si un produit presente un defaut ou ne fonctionne pas correctement, envoyez-moi le numero de commande, le nom du produit et une photo ou une description du probleme. La demande sera verifiee avec les informations de la commande.",
+        ),
+    ]
+    for index, (question, expected) in enumerate(cases):
+        module = load_app(monkeypatch)
+        sent = []
+        fake_meta_send(monkeypatch, sent)
+        client = module.app.test_client()
+        with module.app.app_context():
+            add_meta_connection(module)
+            module.db.session.execute(text("insert into app_settings(key, value, updated_at) values('messenger_auto_reply_mode', 'force_on', CURRENT_TIMESTAMP)"))
+            module.db.session.commit()
+
+        assert post_signed(client, payload(mid=f"auto-business-{index}", text=question)).status_code == 200
+
+        with module.app.app_context():
+            assert sent[0]["text"] == expected
+            assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
+            assert module.db.session.execute(text("select value from app_settings where key='messenger_last_openai_model'")).scalar() == "reponse_locale"
+
+
 def test_gpt5_mini_configuration_uses_compatible_model_first(monkeypatch):
     module = load_app(monkeypatch)
     monkeypatch.setenv("OPENAI_MODEL", "gpt-5-mini")
