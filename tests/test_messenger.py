@@ -209,7 +209,11 @@ def test_health_exposes_render_commit_when_available(monkeypatch):
     response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.get_json() == {"status": "ok", "commit": "abc123"}
+    assert response.get_json() == {
+        "status": "ok",
+        "commit": "abc123",
+        "admin_password_configured": True,
+    }
 
 
 def test_site_knowledge_refresh_job_is_separate_from_messenger_worker(monkeypatch):

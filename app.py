@@ -149,6 +149,7 @@ def protect_dashboard():
 @app.get("/health")
 def health():
     payload = {"status": "ok"}
+    payload["admin_password_configured"] = bool(os.getenv("ADMIN_PASSWORD"))
     commit = os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT_SHA")
     if commit:
         payload["commit"] = commit
