@@ -440,6 +440,7 @@ def test_dashboard_schedule_settings(monkeypatch):
 
 
 def test_dashboard_manual_modes(monkeypatch):
+    monkeypatch.setenv("MESSENGER_AUTO_REPLY_MODE", "schedule")
     module = load_app(monkeypatch)
     client = module.app.test_client()
 
@@ -539,6 +540,26 @@ def test_default_autonomous_mode_answers_during_daytime(monkeypatch):
 
     with module.app.app_context():
         assert sent[0]["text"] == "Reponse autonome."
+        assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
+
+
+def test_autonomous_mode_ignores_legacy_schedule_setting(monkeypatch):
+    module = load_app(monkeypatch)
+    monkeypatch.setattr(sys.modules["messenger_assistant"], "_utc_now", lambda: paris_utc(2026, 1, 5, 12, 0))
+    sent = []
+    fake_openai(monkeypatch, output_text="Reponse autonome malgre ancien horaire.")
+    fake_meta_send(monkeypatch, sent)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+        module.db.session.execute(text("insert into app_settings(key, value, updated_at) values('messenger_auto_reply_mode', 'schedule', CURRENT_TIMESTAMP)"))
+        module.db.session.commit()
+
+    assert post_signed(client, payload(text="Question libre impossible a prevoir")).status_code == 200
+    module.messenger_assistant["process_pending"]()
+
+    with module.app.app_context():
+        assert sent[0]["text"] == "Reponse autonome malgre ancien horaire."
         assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
 
 

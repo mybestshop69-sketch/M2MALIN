@@ -737,10 +737,16 @@ def init_messenger_assistant(
         return _schedule_status(now_utc)["active"]
 
     def _auto_reply_mode() -> str:
-        row = db.session.get(AppSetting, "messenger_auto_reply_mode")
-        if row and row.value in ("schedule", "force_on", "force_off"):
-            return row.value
         env_mode = os.getenv("MESSENGER_AUTO_REPLY_MODE", "force_on").strip()
+        row = db.session.get(AppSetting, "messenger_auto_reply_mode")
+        if row and row.value == "force_off":
+            return "force_off"
+        if row and row.value == "force_on":
+            return "force_on"
+        if row and row.value == "schedule" and env_mode == "schedule":
+            return "schedule"
+        if row and row.value in ("schedule", "force_on", "force_off") and env_mode != "force_on":
+            return row.value
         if env_mode in ("schedule", "force_on", "force_off"):
             return env_mode
         return "force_on"
