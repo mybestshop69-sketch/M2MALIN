@@ -556,7 +556,7 @@ def test_force_on_answers_paused_conversation(monkeypatch):
         module.db.session.execute(text("update messenger_messages set status='human_required' where meta_message_id='mid-1'"))
         module.db.session.execute(text("update messenger_conversations set needs_human=1, bot_paused=1"))
         module.db.session.commit()
-    assert post_signed(client, payload(mid="mid-2", text="Bonjour, vous vendez quoi ?")).status_code == 200
+    assert post_signed(client, payload(mid="mid-2", text="Pouvez-vous me proposer quelque chose utile ?")).status_code == 200
     module.messenger_assistant["process_pending"]()
 
     with module.app.app_context():
@@ -589,7 +589,18 @@ def test_openai_failure_records_safe_diagnostic(monkeypatch):
 def test_product_question_gets_local_answer_when_openai_fails(monkeypatch):
     module = load_app(monkeypatch)
     sent = []
-    fake_openai(monkeypatch, error=RuntimeError("openai down"))
+    openai_calls = []
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            openai_calls.append(kwargs)
+            raise AssertionError("OpenAI ne doit pas etre appele pour cette question simple")
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.responses = FakeResponses()
+
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=FakeOpenAI))
     fake_meta_send(monkeypatch, sent)
     client = module.app.test_client()
     with module.app.app_context():
@@ -601,6 +612,7 @@ def test_product_question_gets_local_answer_when_openai_fails(monkeypatch):
     module.messenger_assistant["process_pending"]()
 
     with module.app.app_context():
+        assert openai_calls == []
         assert sent[0]["text"] == "M2 Malin vend les produits affiches sur sa boutique officielle. Pour voir le catalogue et les prix a jour, consultez : https://m2malin.fr"
         assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
         assert module.db.session.execute(text("select value from app_settings where key='messenger_last_openai_status'")).scalar() == "local_fallback"
@@ -632,7 +644,7 @@ def test_gpt5_mini_configuration_uses_compatible_model_first(monkeypatch):
         module.db.session.execute(text("insert into app_settings(key, value, updated_at) values('messenger_auto_reply_mode', 'force_on', CURRENT_TIMESTAMP)"))
         module.db.session.commit()
 
-    assert post_signed(client, payload(text="Bonjour, vous vendez quoi ?")).status_code == 200
+    assert post_signed(client, payload(text="Pouvez-vous analyser ma demande detaillee ?")).status_code == 200
     module.messenger_assistant["process_pending"]()
 
     with module.app.app_context():
@@ -670,7 +682,7 @@ def test_openai_verification_error_falls_back_to_older_model(monkeypatch):
         module.db.session.execute(text("insert into app_settings(key, value, updated_at) values('messenger_auto_reply_mode', 'force_on', CURRENT_TIMESTAMP)"))
         module.db.session.commit()
 
-    assert post_signed(client, payload(text="Bonjour, vous vendez quoi ?")).status_code == 200
+    assert post_signed(client, payload(text="Pouvez-vous analyser ma demande detaillee ?")).status_code == 200
     module.messenger_assistant["process_pending"]()
 
     with module.app.app_context():

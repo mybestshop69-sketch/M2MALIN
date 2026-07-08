@@ -518,6 +518,20 @@ def init_messenger_assistant(
                 message.status = "human_required"
                 message.processed_at = datetime.utcnow()
                 return
+            local_reply = _immediate_local_reply_for_content(message.content or "")
+            if local_reply:
+                _send_reply(conversation, local_reply)
+                conversation.needs_human = False
+                conversation.bot_paused = False
+                message.status = "completed"
+                message.processed_at = datetime.utcnow()
+                _set_setting("messenger_last_openai_status", "local_fallback")
+                _set_setting("messenger_last_openai_error", "")
+                _set_setting("messenger_last_openai_model", "reponse_locale")
+                _set_setting("messenger_last_openai_fallback_used", "false")
+                _set_setting("messenger_last_message_processed_at", message.processed_at.isoformat())
+                app.logger.warning("messenger.message.completed status=%s", message.status)
+                return
             reply_requires_human = False
             try:
                 reply = _openai_reply(conversation)
@@ -1311,6 +1325,12 @@ def _fallback_reply_for_content(
     if not include_generic:
         return "", True
     return OPENAI_FALLBACK, True
+
+
+def _immediate_local_reply_for_content(content: str) -> str:
+    if _is_product_question(content):
+        return PRODUCT_FALLBACK_MESSAGE
+    return ""
 
 
 def _can_answer_with_safe_fallback(content: str) -> bool:
