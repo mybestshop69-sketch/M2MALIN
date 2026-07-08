@@ -658,6 +658,25 @@ def test_greeting_gets_immediate_webhook_reply(monkeypatch):
         assert module.db.session.execute(text("select value from app_settings where key='messenger_last_openai_model'")).scalar() == "reponse_locale"
 
 
+def test_location_question_gets_immediate_webhook_reply(monkeypatch):
+    module = load_app(monkeypatch)
+    sent = []
+    fake_meta_send(monkeypatch, sent)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+        module.db.session.execute(text("insert into app_settings(key, value, updated_at) values('messenger_auto_reply_mode', 'force_on', CURRENT_TIMESTAMP)"))
+        module.db.session.commit()
+
+    response = post_signed(client, payload(text="vous etes en france"))
+
+    assert response.status_code == 200
+    with module.app.app_context():
+        assert sent[0]["text"] == "M2 Malin est une boutique francaise basee a Aix-en-Provence. Vous pouvez decouvrir la boutique ici : https://m2malin.fr"
+        assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_last_openai_model'")).scalar() == "reponse_locale"
+
+
 def test_gpt5_mini_configuration_uses_compatible_model_first(monkeypatch):
     module = load_app(monkeypatch)
     monkeypatch.setenv("OPENAI_MODEL", "gpt-5-mini")
@@ -1176,7 +1195,7 @@ def test_worker_recovers_safe_faq_already_marked_human_required(monkeypatch):
     with module.app.app_context():
         add_meta_connection(module)
 
-    assert post_signed(client, payload(text="Ou vous trouvez-vous ?")).status_code == 200
+    assert post_signed(client, payload(text="Quels sont vos horaires ?")).status_code == 200
     with module.app.app_context():
         module.db.session.execute(text("update messenger_messages set status='human_required', processed_at=null"))
         module.db.session.execute(text("update messenger_conversations set needs_human=1, bot_paused=1"))
@@ -1185,7 +1204,7 @@ def test_worker_recovers_safe_faq_already_marked_human_required(monkeypatch):
 
     with module.app.app_context():
         assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
-        assert sent[0]["text"] == "M2 Malin est une boutique francaise basee a Aix-en-Provence. Vous pouvez decouvrir la boutique ici : https://m2malin.fr"
+        assert sent[0]["text"] == "Nous vous repondons du lundi au vendredi, de 9 h a 18 h. Vous pouvez aussi consulter la boutique ici : https://m2malin.fr"
 
 
 def test_worker_recovers_greeting_already_marked_human_required(monkeypatch):
@@ -1219,7 +1238,7 @@ def test_worker_recovers_only_latest_safe_faq_per_conversation(monkeypatch):
         add_meta_connection(module)
 
     assert post_signed(client, payload(mid="mid-old", text="Quels sont vos delais de livraison ?")).status_code == 200
-    assert post_signed(client, payload(mid="mid-new", text="Ou vous trouvez-vous ?")).status_code == 200
+    assert post_signed(client, payload(mid="mid-new", text="Quels sont vos horaires ?")).status_code == 200
     with module.app.app_context():
         module.db.session.execute(text("update messenger_messages set status='human_required', processed_at=null"))
         module.db.session.execute(text("update messenger_conversations set needs_human=1, bot_paused=1"))
@@ -1232,7 +1251,7 @@ def test_worker_recovers_only_latest_safe_faq_per_conversation(monkeypatch):
         ).all()
         assert rows == [("mid-old", "completed"), ("mid-new", "completed")]
         assert len(sent) == 1
-        assert sent[0]["text"] == "M2 Malin est une boutique francaise basee a Aix-en-Provence. Vous pouvez decouvrir la boutique ici : https://m2malin.fr"
+        assert sent[0]["text"] == "Nous vous repondons du lundi au vendredi, de 9 h a 18 h. Vous pouvez aussi consulter la boutique ici : https://m2malin.fr"
 
 
 def test_openai_handoff_marker_is_not_sent_to_client(monkeypatch):

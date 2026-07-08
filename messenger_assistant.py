@@ -1368,6 +1368,8 @@ def _fallback_reply_for_content(
 def _immediate_local_reply_for_content(content: str) -> str:
     if _is_greeting(content):
         return GREETING_FALLBACK_MESSAGE
+    if _is_location_question(content):
+        return LOCATION_FALLBACK_MESSAGE
     if _is_product_question(content):
         return PRODUCT_FALLBACK_MESSAGE
     return ""
@@ -1404,6 +1406,10 @@ def _is_location_question(content: str) -> bool:
         or "ou etes vous" in normalized
         or "votre adresse" in normalized
         or "vous etes ou" in normalized
+        or "vous etes en france" in normalized
+        or "etes vous en france" in normalized
+        or "base en france" in normalized
+        or "basee en france" in normalized
         or "localisation" in normalized
     )
 
