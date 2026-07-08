@@ -450,7 +450,7 @@ def init_messenger_assistant(
                         MessengerMessage.status == "pending",
                         (MessengerMessage.next_attempt_at.is_(None)) | (MessengerMessage.next_attempt_at <= datetime.utcnow()),
                     )
-                    .order_by(MessengerMessage.created_at.asc())
+                    .order_by(MessengerMessage.created_at.desc())
                     .limit(1)
                 )
                 if message:

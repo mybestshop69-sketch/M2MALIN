@@ -1319,6 +1319,27 @@ def test_shopify_slow_call_does_not_block_messenger_processing(monkeypatch):
         assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "completed"
 
 
+def test_latest_pending_message_is_processed_first(monkeypatch):
+    module = load_app(monkeypatch)
+    sent = []
+    fake_openai(monkeypatch, error=RuntimeError("openai down"))
+    fake_meta_send(monkeypatch, sent)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+        module.db.session.execute(text("insert into app_settings(key, value, updated_at) values('messenger_auto_reply_mode', 'force_on', CURRENT_TIMESTAMP)"))
+        module.db.session.commit()
+
+    assert post_signed(client, payload(mid="old-1", text="Ancien message bloque")).status_code == 200
+    assert post_signed(client, payload(mid="new-1", text="Bonjour, vous vendez quoi ?")).status_code == 200
+    module.messenger_assistant["process_pending"]()
+
+    with module.app.app_context():
+        assert sent[0]["text"] == "M2 Malin vend les produits affiches sur sa boutique officielle. Pour voir le catalogue et les prix a jour, consultez : https://m2malin.fr"
+        assert module.db.session.execute(text("select status from messenger_messages where meta_message_id='new-1'")).scalar() == "completed"
+        assert module.db.session.execute(text("select status from messenger_messages where meta_message_id='old-1'")).scalar() == "pending"
+
+
 def test_openai_timeout_is_controlled_and_sends_fallback(monkeypatch):
     module = load_app(monkeypatch)
     sent = []
@@ -1434,7 +1455,7 @@ def test_next_message_is_processed_after_previous_failure(monkeypatch):
         rows = module.db.session.execute(
             text("select status from messenger_messages where direction='inbound' order by id")
         ).all()
-        assert [row[0] for row in rows] == ["pending", "completed"]
+        assert [row[0] for row in rows] == ["completed", "pending"]
 
 
 def test_meta_signature_valid_with_real_hmac(monkeypatch, caplog):
