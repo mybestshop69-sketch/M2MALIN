@@ -567,6 +567,7 @@ def publish_post(post_id: int) -> None:
                         post.caption,
                         post.media_url or "",
                         post.media_type,
+                        privacy_level=os.getenv("TIKTOK_PRIVACY_LEVEL", "PUBLIC_TO_EVERYONE"),
                     )
                 else:
                     raise SocialApiError(f"Plateforme inconnue : {platform}")
