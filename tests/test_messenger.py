@@ -743,8 +743,16 @@ def test_common_faq_questions_get_immediate_webhook_replies(monkeypatch):
             "Voici le site officiel M2 Malin : https://m2malin.fr",
         ),
         (
+            "D'ou viennent les produits ?",
+            "Les produits proposes par M2 Malin sont selectionnes pour leur utilite au quotidien, notamment pour la maison, le rangement et les petits espaces. L'origine exacte peut varier selon l'article. Pour une information precise, envoyez-moi le nom ou le lien du produit concerne et je verifierai les informations disponibles.",
+        ),
+        (
             "avez-vous un numero de telephone",
             "Je n'ai pas de numero de telephone public verifie a communiquer. Vous pouvez nous ecrire ici sur Messenger ou passer par le site officiel M2 Malin : https://m2malin.fr",
+        ),
+        (
+            "Vous etes des nuls",
+            "Je comprends que vous puissiez etre mecontent. Je reste la pour vous aider correctement : dites-moi simplement ce que vous souhaitez verifier, par exemple un produit, une commande, une livraison, un retour ou un remboursement.",
         ),
     ]
     for question, expected in cases:

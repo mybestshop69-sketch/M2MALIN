@@ -43,7 +43,9 @@ HOURS_FALLBACK_MESSAGE = "Nous vous repondons du lundi au vendredi, de 9 h a 18 
 WEBSITE_FALLBACK_MESSAGE = "Voici le site officiel M2 Malin : https://m2malin.fr"
 GREETING_FALLBACK_MESSAGE = "Bonjour. Merci d'avoir contacte M2 Malin. Comment puis-je vous aider aujourd'hui ? Vous pouvez me poser une question sur un produit, la livraison, une commande ou un retour."
 PRODUCT_FALLBACK_MESSAGE = "M2 Malin vend les produits affiches sur sa boutique officielle. Pour voir le catalogue et les prix a jour, consultez : https://m2malin.fr"
+PRODUCT_ORIGIN_FALLBACK_MESSAGE = "Les produits proposes par M2 Malin sont selectionnes pour leur utilite au quotidien, notamment pour la maison, le rangement et les petits espaces. L'origine exacte peut varier selon l'article. Pour une information precise, envoyez-moi le nom ou le lien du produit concerne et je verifierai les informations disponibles."
 CONTACT_FALLBACK_MESSAGE = "Je n'ai pas de numero de telephone public verifie a communiquer. Vous pouvez nous ecrire ici sur Messenger ou passer par le site officiel M2 Malin : https://m2malin.fr"
+ABUSE_DEESCALATION_MESSAGE = "Je comprends que vous puissiez etre mecontent. Je reste la pour vous aider correctement : dites-moi simplement ce que vous souhaitez verifier, par exemple un produit, une commande, une livraison, un retour ou un remboursement."
 GENERIC_CLARIFICATION_MESSAGE = "Je vous aide avec plaisir. Pouvez-vous me donner un peu plus de details sur votre demande afin que je vous reponde correctement ?"
 INVALID_STANDALONE_REPLIES = {"oui", "non", "peut etre", "d accord", "ok"}
 EXPECTED_META_APP_ID = "1551714796659004"
@@ -1422,6 +1424,10 @@ def _fallback_reply_for_content(
         return HOURS_FALLBACK_MESSAGE, False
     if _is_website_question(content):
         return WEBSITE_FALLBACK_MESSAGE, False
+    if _is_product_origin_question(content):
+        return PRODUCT_ORIGIN_FALLBACK_MESSAGE, False
+    if _is_abusive_message(content):
+        return ABUSE_DEESCALATION_MESSAGE, False
     if _is_product_question(content):
         return PRODUCT_FALLBACK_MESSAGE, False
     if _is_contact_question(content):
@@ -1444,6 +1450,10 @@ def _immediate_local_reply_for_content(content: str, knowledge: dict[str, Any] |
         return HOURS_FALLBACK_MESSAGE
     if _is_website_question(content):
         return WEBSITE_FALLBACK_MESSAGE
+    if _is_product_origin_question(content):
+        return PRODUCT_ORIGIN_FALLBACK_MESSAGE
+    if _is_abusive_message(content):
+        return ABUSE_DEESCALATION_MESSAGE
     if _is_product_question(content):
         return PRODUCT_FALLBACK_MESSAGE
     if _is_contact_question(content):
@@ -1459,6 +1469,8 @@ def _can_answer_with_safe_fallback(content: str) -> bool:
         or _is_purchase_question(content)
         or _is_hours_question(content)
         or _is_website_question(content)
+        or _is_product_origin_question(content)
+        or _is_abusive_message(content)
         or _is_product_question(content)
         or _is_contact_question(content)
     )
@@ -1522,14 +1534,87 @@ def _is_website_question(content: str) -> bool:
 
 def _is_product_question(content: str) -> bool:
     normalized = _compact_intent_text(content)
+    if _is_product_origin_question(content):
+        return False
     return (
         "vous vendez quoi" in normalized
         or "que vendez vous" in normalized
         or "qu est ce que vous vendez" in normalized
-        or "produit" in normalized
         or "catalogue" in normalized
         or "prix" in normalized
+        or (
+            "produit" in normalized
+            and any(
+                marker in normalized
+                for marker in (
+                    "vendez",
+                    "vente",
+                    "proposez",
+                    "avez",
+                    "disponible",
+                    "catalogue",
+                    "prix",
+                    "acheter",
+                    "commander",
+                )
+            )
+        )
+        or (
+            "produits" in normalized
+            and any(
+                marker in normalized
+                for marker in (
+                    "vendez",
+                    "vente",
+                    "proposez",
+                    "avez",
+                    "disponibles",
+                    "catalogue",
+                    "prix",
+                    "acheter",
+                    "commander",
+                )
+            )
+        )
     )
+
+
+def _is_product_origin_question(content: str) -> bool:
+    normalized = _compact_intent_text(content)
+    return (
+        "d ou viennent les produits" in normalized
+        or "d ou viennent vos produits" in normalized
+        or "vos produits viennent d ou" in normalized
+        or "les produits viennent d ou" in normalized
+        or "origine des produits" in normalized
+        or "origine de vos produits" in normalized
+        or "provenance des produits" in normalized
+        or "provenance de vos produits" in normalized
+        or ("origine" in normalized and "produit" in normalized)
+        or ("provenance" in normalized and "produit" in normalized)
+    )
+
+
+def _is_abusive_message(content: str) -> bool:
+    normalized = _compact_intent_text(content)
+    words = set(normalized.split())
+    abusive_words = {
+        "nul",
+        "nuls",
+        "merde",
+        "arnaque",
+        "voleur",
+        "voleurs",
+        "escroc",
+        "escrocs",
+        "connard",
+        "connards",
+        "con",
+        "cons",
+        "debile",
+        "debiles",
+    }
+    return bool(words & abusive_words) or "vous etes nul" in normalized or "vous etes des nuls" in normalized
 
 
 def _is_contact_question(content: str) -> bool:
