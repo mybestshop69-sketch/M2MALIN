@@ -713,6 +713,10 @@ def test_common_faq_questions_get_immediate_webhook_replies(monkeypatch):
             "Quel est votre site internet ?",
             "Voici le site officiel M2 Malin : https://m2malin.fr",
         ),
+        (
+            "avez-vous un numero de telephone",
+            "Je n'ai pas de numero de telephone public verifie a communiquer. Vous pouvez nous ecrire ici sur Messenger ou passer par le site officiel M2 Malin : https://m2malin.fr",
+        ),
     ]
     for question, expected in cases:
         module = load_app(monkeypatch)

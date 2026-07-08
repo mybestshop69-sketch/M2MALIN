@@ -42,6 +42,7 @@ HOURS_FALLBACK_MESSAGE = "Nous vous repondons du lundi au vendredi, de 9 h a 18 
 WEBSITE_FALLBACK_MESSAGE = "Voici le site officiel M2 Malin : https://m2malin.fr"
 GREETING_FALLBACK_MESSAGE = "Bonjour. Merci d'avoir contacte M2 Malin. Comment puis-je vous aider aujourd'hui ? Vous pouvez me poser une question sur un produit, la livraison, une commande ou un retour."
 PRODUCT_FALLBACK_MESSAGE = "M2 Malin vend les produits affiches sur sa boutique officielle. Pour voir le catalogue et les prix a jour, consultez : https://m2malin.fr"
+CONTACT_FALLBACK_MESSAGE = "Je n'ai pas de numero de telephone public verifie a communiquer. Vous pouvez nous ecrire ici sur Messenger ou passer par le site officiel M2 Malin : https://m2malin.fr"
 EXPECTED_META_APP_ID = "1551714796659004"
 EXPECTED_META_PAGE_ID = "1163222070213376"
 REQUIRED_META_SCOPES = {
@@ -1365,6 +1366,8 @@ def _fallback_reply_for_content(
         return WEBSITE_FALLBACK_MESSAGE, False
     if _is_product_question(content):
         return PRODUCT_FALLBACK_MESSAGE, False
+    if _is_contact_question(content):
+        return CONTACT_FALLBACK_MESSAGE, False
     if not include_generic:
         return "", True
     return OPENAI_FALLBACK, True
@@ -1383,6 +1386,8 @@ def _immediate_local_reply_for_content(content: str, knowledge: dict[str, Any] |
         return WEBSITE_FALLBACK_MESSAGE
     if _is_product_question(content):
         return PRODUCT_FALLBACK_MESSAGE
+    if _is_contact_question(content):
+        return CONTACT_FALLBACK_MESSAGE
     return ""
 
 
@@ -1394,6 +1399,7 @@ def _can_answer_with_safe_fallback(content: str) -> bool:
         or _is_hours_question(content)
         or _is_website_question(content)
         or _is_product_question(content)
+        or _is_contact_question(content)
     )
 
 
@@ -1444,6 +1450,22 @@ def _is_product_question(content: str) -> bool:
         or "produit" in normalized
         or "catalogue" in normalized
         or "prix" in normalized
+    )
+
+
+def _is_contact_question(content: str) -> bool:
+    normalized = _normalize_text(content)
+    return (
+        "telephone" in normalized
+        or "numero de tel" in normalized
+        or "numero tel" in normalized
+        or "numero de telephone" in normalized
+        or "vous appeler" in normalized
+        or "comment vous contacter" in normalized
+        or "contact" in normalized
+        or "adresse mail" in normalized
+        or "email" in normalized
+        or "e-mail" in normalized
     )
 
 
