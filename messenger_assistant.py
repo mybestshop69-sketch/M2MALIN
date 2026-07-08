@@ -1559,10 +1559,13 @@ def _is_greeting(content: str) -> bool:
         "moi c est",
         "mon nom est",
         "je suis",
+        "je sui",
     )
     if 0 < len(words) <= 3 and any(word in greeting_words for word in words):
         return True
-    return any(word in greeting_words for word in words[:3]) and any(marker in compact for marker in introduction_markers)
+    if any(word in greeting_words for word in words[:3]) and any(marker in compact for marker in introduction_markers):
+        return True
+    return 2 <= len(words) <= 5 and any(marker in compact for marker in introduction_markers)
 
 
 def _is_delivery_question(content: str) -> bool:
@@ -1606,8 +1609,30 @@ def _is_purchase_question(content: str) -> bool:
 
 def _is_order_question(content: str) -> bool:
     normalized = _compact_intent_text(content)
+    order_markers = (
+        "commande",
+        "colis",
+    )
+    waiting_markers = (
+        "pas de nouvelle",
+        "pas de nouvelles",
+        "aucune nouvelle",
+        "sans nouvelle",
+        "pas recu",
+        "pas recue",
+        "pas recu",
+        "pas livre",
+        "pas livree",
+        "j attends",
+        "attends toujours",
+        "ou ca en est",
+    )
     return (
         "ou est ma commande" in normalized
+        or "j ai fait une commande" in normalized
+        or "jai fait une commande" in normalized
+        or "j ai passe une commande" in normalized
+        or "jai passe une commande" in normalized
         or "suivre ma commande" in normalized
         or "suivi commande" in normalized
         or "numero de commande" in normalized
@@ -1615,6 +1640,7 @@ def _is_order_question(content: str) -> bool:
         or "mon colis" in normalized
         or "suivre mon colis" in normalized
         or "statut de commande" in normalized
+        or (any(marker in normalized for marker in order_markers) and any(marker in normalized for marker in waiting_markers))
     )
 
 
