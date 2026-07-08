@@ -5,7 +5,7 @@
   <div>
     <p class="eyebrow">MESSENGER IA</p>
     <h1>Assistant Messenger</h1>
-    <p>Reponses automatiques : <strong>{{ "activees" if auto_reply_enabled else "desactivees" }}</strong></p>
+    <p>Etat actuel : <strong>{{ "IA active" if schedule_status.active else "IA inactive" }}</strong></p>
   </div>
   <form method="post" action="{{ url_for('activate_meta_messenger') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -19,6 +19,10 @@
     <article class="card"><h3>Webhook</h3><p class="status {{ 'ok' if webhook_configured else '' }}">{{ "configure" if webhook_configured else "a verifier" }}</p></article>
     <article class="card"><h3>Meta</h3><p class="status {{ 'ok' if meta_connected else '' }}">{{ "connecte" if meta_connected else "non connecte" }}</p></article>
     <article class="card"><h3>OpenAI</h3><p class="status {{ 'ok' if openai_configured else '' }}">{{ "configure" if openai_configured else "cle ou modele manquant" }}</p></article>
+    <article class="card"><h3>Autorisation manuelle</h3><p class="status {{ 'ok' if schedule_status.manual_enabled else '' }}">{{ "activee" if schedule_status.manual_enabled else "desactivee" }}</p></article>
+    <article class="card"><h3>Horaire IA</h3><p>{{ schedule_status.start_time }} - {{ schedule_status.end_time }}</p></article>
+    <article class="card"><h3>Fuseau horaire</h3><p>{{ schedule_status.timezone }}</p></article>
+    <article class="card"><h3>Prochain changement</h3><p>{{ schedule_status.next_change_label }} : {{ schedule_status.next_change_at }}</p></article>
   </div>
 </section>
 
@@ -26,11 +30,24 @@
   <h2>Reglage global</h2>
   <form method="post" action="{{ url_for('messenger_settings') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <button type="submit" name="enabled" value="true">Activer les reponses automatiques</button>
+    <button type="submit" name="enabled" value="true">Activer temporairement l'IA</button>
   </form>
   <form method="post" action="{{ url_for('messenger_settings') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <button type="submit" name="enabled" value="false">Desactiver les reponses automatiques</button>
+    <button type="submit" name="enabled" value="false">Desactiver temporairement l'IA</button>
+  </form>
+  <form method="post" action="{{ url_for('messenger_settings') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Activation
+      <input type="time" name="start_time" value="{{ schedule_status.start_time }}" required>
+    </label>
+    <label>Desactivation
+      <input type="time" name="end_time" value="{{ schedule_status.end_time }}" required>
+    </label>
+    <label>Fuseau horaire
+      <input type="text" name="timezone" value="{{ schedule_status.timezone }}" required>
+    </label>
+    <button type="submit">Enregistrer les horaires</button>
   </form>
 </section>
 

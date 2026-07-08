@@ -6,8 +6,9 @@ import importlib.util
 import json
 import sys
 import types
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
@@ -24,6 +25,7 @@ def load_app(monkeypatch):
     monkeypatch.setenv("OPENAI_MODEL", "gpt-test")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     module = importlib.import_module("app")
+    monkeypatch.setattr(sys.modules["messenger_assistant"], "_utc_now", lambda: datetime(2026, 1, 1, 19, 0, tzinfo=timezone.utc))
     module.app.config["TESTING"] = True
     return module
 
@@ -109,6 +111,10 @@ def post_signed(client, data):
         content_type="application/json",
         headers={"X-Hub-Signature-256": signed(body)},
     )
+
+
+def paris_utc(year, month, day, hour, minute=0):
+    return datetime(year, month, day, hour, minute, tzinfo=ZoneInfo("Europe/Paris")).astimezone(timezone.utc)
 
 
 def add_meta_connection(module):
@@ -415,6 +421,84 @@ def test_dashboard_activation_and_deactivation(monkeypatch):
         assert module.db.session.execute(text("select value from app_settings where key='messenger_auto_reply_enabled'")).scalar() == "false"
 
 
+def test_dashboard_schedule_settings(monkeypatch):
+    module = load_app(monkeypatch)
+    client = module.app.test_client()
+    token = csrf_token(client)
+
+    response = client.post(
+        "/messenger/settings",
+        headers=auth_headers(),
+        data={"csrf_token": token, "start_time": "19:30", "end_time": "08:15", "timezone": "Europe/Paris"},
+    )
+
+    assert response.status_code == 302
+    with module.app.app_context():
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_schedule_start_time'")).scalar() == "19:30"
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_schedule_end_time'")).scalar() == "08:15"
+        assert module.db.session.execute(text("select value from app_settings where key='messenger_schedule_timezone'")).scalar() == "Europe/Paris"
+
+
+def test_messenger_schedule_boundaries(monkeypatch):
+    module = load_app(monkeypatch)
+    cases = [
+        (paris_utc(2026, 1, 5, 8, 59), True),
+        (paris_utc(2026, 1, 5, 9, 0), False),
+        (paris_utc(2026, 1, 5, 17, 59), False),
+        (paris_utc(2026, 1, 5, 18, 0), True),
+        (paris_utc(2026, 1, 6, 0, 0), True),
+    ]
+
+    with module.app.app_context():
+        for now_utc, expected in cases:
+            assert module.messenger_assistant["schedule_status"](now_utc)["active"] is expected
+
+
+def test_messenger_schedule_weekend(monkeypatch):
+    module = load_app(monkeypatch)
+
+    with module.app.app_context():
+        assert module.messenger_assistant["schedule_status"](paris_utc(2026, 1, 10, 8, 59))["active"] is True
+        assert module.messenger_assistant["schedule_status"](paris_utc(2026, 1, 10, 12, 0))["active"] is False
+        assert module.messenger_assistant["schedule_status"](paris_utc(2026, 1, 11, 18, 0))["active"] is True
+
+
+def test_messenger_schedule_dst_transitions_europe_paris(monkeypatch):
+    module = load_app(monkeypatch)
+
+    with module.app.app_context():
+        summer_start = module.messenger_assistant["schedule_status"](paris_utc(2026, 3, 29, 8, 59))
+        summer_day = module.messenger_assistant["schedule_status"](paris_utc(2026, 3, 29, 9, 0))
+        winter_start = module.messenger_assistant["schedule_status"](paris_utc(2026, 10, 25, 8, 59))
+        winter_day = module.messenger_assistant["schedule_status"](paris_utc(2026, 10, 25, 9, 0))
+
+    assert summer_start["active"] is True
+    assert summer_day["active"] is False
+    assert winter_start["active"] is True
+    assert winter_day["active"] is False
+    assert summer_start["timezone"] == "Europe/Paris"
+    assert winter_start["timezone"] == "Europe/Paris"
+
+
+def test_daytime_message_is_kept_for_human_without_auto_reply(monkeypatch):
+    module = load_app(monkeypatch)
+    monkeypatch.setattr(sys.modules["messenger_assistant"], "_utc_now", lambda: paris_utc(2026, 1, 5, 12, 0))
+    sent = []
+    fake_openai(monkeypatch, output_text="Reponse IA")
+    fake_meta_send(monkeypatch, sent)
+    client = module.app.test_client()
+    with module.app.app_context():
+        add_meta_connection(module)
+
+    assert post_signed(client, payload(text="bonjour")).status_code == 200
+    module.messenger_assistant["process_pending"]()
+
+    with module.app.app_context():
+        assert sent == []
+        assert module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar() == "human_required"
+        assert module.db.session.execute(text("select needs_human from messenger_conversations")).scalar() == 1
+
+
 def test_dashboard_meta_configuration_check_valid(monkeypatch):
     monkeypatch.setenv("META_APP_ID", "1551714796659004")
     module = load_app(monkeypatch)
@@ -623,7 +707,7 @@ def test_auto_disabled_does_not_send(monkeypatch):
         outbound = module.db.session.execute(text("select count(*) from messenger_messages where direction='outbound'")).scalar()
         inbound_status = module.db.session.execute(text("select status from messenger_messages where direction='inbound'")).scalar()
         assert outbound == 0
-        assert inbound_status == "completed"
+        assert inbound_status == "human_required"
 
 
 def test_human_transfer_detects_accented_keywords(monkeypatch):
@@ -859,7 +943,7 @@ def test_openai_handoff_marker_is_not_sent_to_client(monkeypatch):
         assert row == (1, 1)
         assert status == "human_required"
         assert "[HUMAN_REQUIRED]" not in sent[0]["text"]
-        assert sent[0]["text"] == "Je préfère vérifier cette information plutôt que de vous donner une réponse incorrecte. Je transmets votre demande à un conseiller."
+        assert sent[0]["text"] == "Je prefere verifier cette information plutot que de vous donner une reponse incorrecte. Je transmets votre demande a un conseiller qui reprendra a partir de 9 h."
 
 
 def test_policy_fetch_and_cache(monkeypatch):
